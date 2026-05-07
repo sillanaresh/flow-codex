@@ -248,10 +248,13 @@ Current verification covers:
 
 - Codex launch and resume command construction.
 - Codex dangerous bypass flag ordering.
+- iTerm2/Terminal.app backend detection and Terminal fallback when iTerm
+  is unavailable.
 - Codex skill install path.
 - Codex hook install/uninstall/idempotency.
 - `codex_hooks = true` config enablement.
 - Hook-based session ID and transcript path registration.
+- Fresh Codex session registration refreshes `session_started`.
 - Resume hook bookkeeping.
 - Codex JSONL transcript rendering, including tool calls and tool output.
 - Transcript path lookup by stored `transcript_path`.
