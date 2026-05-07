@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -101,6 +102,34 @@ func TestSkillInstallWritesFile(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "---") {
 		t.Errorf("installed skill missing YAML frontmatter delimiters")
+	}
+}
+
+func TestSkillFrontmatterDescriptionFitsCodexLimit(t *testing.T) {
+	got := string(embeddedSkill)
+	re := regexp.MustCompile(`(?s)^---\n.*?description:\s*\|\n(.*?)\n---`)
+	m := re.FindStringSubmatch(got)
+	if len(m) != 2 {
+		t.Fatalf("skill missing YAML description frontmatter")
+	}
+	var lines []string
+	for _, line := range strings.Split(m[1], "\n") {
+		lines = append(lines, strings.TrimSpace(line))
+	}
+	description := strings.TrimSpace(strings.Join(lines, "\n"))
+	if len(description) > 1024 {
+		t.Fatalf("Codex skill description is %d chars, must be <= 1024", len(description))
+	}
+	for _, want := range []string{
+		"Personal task and Codex session manager",
+		"tasks",
+		"projects",
+		"playbooks",
+		"`flow <subcommand>`",
+	} {
+		if !strings.Contains(description, want) {
+			t.Errorf("description missing trigger phrase %q:\n%s", want, description)
+		}
 	}
 }
 
