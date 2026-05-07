@@ -135,6 +135,11 @@ flow init
 knowledge-base files, installs the Codex skill, installs Codex hooks, and
 enables the `codex_hooks` feature in `~/.codex/config.toml`.
 
+`flow do <task>` opens a new terminal tab that runs `codex`, so the Codex
+CLI must be available on the shell `PATH` used by Terminal.app or iTerm2.
+If Codex is bundled inside another app, add or symlink its `codex` binary
+into a directory such as `~/.local/bin` that your terminal shell can see.
+
 After install, restart Codex so it discovers the skill.
 
 ## Daily Use

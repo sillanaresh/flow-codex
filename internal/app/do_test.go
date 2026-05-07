@@ -4,6 +4,7 @@ import (
 	"errors"
 	"flow/internal/flowdb"
 	"flow/internal/iterm"
+	"flow/internal/spawner"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -15,6 +16,7 @@ import (
 // most recent AppleScript argument passed to osascript.
 func stubITerm(t *testing.T) (*int64, func() string) {
 	t.Helper()
+	pinITermBackend(t)
 	var count int64
 	var mu sync.Mutex
 	var lastScript string
@@ -34,6 +36,13 @@ func stubITerm(t *testing.T) (*int64, func() string) {
 		defer mu.Unlock()
 		return lastScript
 	}
+}
+
+func pinITermBackend(t *testing.T) {
+	t.Helper()
+	old := spawner.Override
+	spawner.Override = spawner.BackendITerm
+	t.Cleanup(func() { spawner.Override = old })
 }
 
 // seedTask creates a minimal task row (floating, workspace work_dir).
@@ -88,6 +97,7 @@ func TestCmdDoFreshSpawnsCodex(t *testing.T) {
 // does not know or write Codex's generated id.
 func TestCmdDoFreshSpawnFailureLeavesNoSessionID(t *testing.T) {
 	setupFlowRoot(t)
+	pinITermBackend(t)
 	seedTask(t, "fail-task")
 
 	// Stub iterm.Runner to fail every call — simulates the
@@ -127,6 +137,7 @@ func TestCmdDoFreshSpawnFailureLeavesNoSessionID(t *testing.T) {
 // should not cost the user their conversation history.
 func TestCmdDoResumeSpawnFailureKeepsSessionID(t *testing.T) {
 	setupFlowRoot(t)
+	pinITermBackend(t)
 	seedTask(t, "resume-fail-task")
 
 	db := openFlowDB(t)

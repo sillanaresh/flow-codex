@@ -6,7 +6,8 @@
 //
 //	TERM_PROGRAM=iTerm.app        → internal/iterm
 //	TERM_PROGRAM=Apple_Terminal   → internal/terminal
-//	anything else (or unset)      → internal/iterm  (historical default)
+//	anything else (or unset)      → internal/iterm if installed, otherwise
+//	                                  internal/terminal
 //
 // The Override var lets tests pin the backend deterministically without
 // having to set TERM_PROGRAM via t.Setenv. Existing tests that mock
@@ -45,6 +46,9 @@ func Detect() Backend {
 	case "iTerm.app":
 		return BackendITerm
 	default:
+		if !iterm.Available() {
+			return BackendTerminal
+		}
 		return BackendITerm
 	}
 }

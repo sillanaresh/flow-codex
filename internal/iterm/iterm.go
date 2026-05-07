@@ -19,6 +19,20 @@ var Runner = func(args []string) error {
 	return nil
 }
 
+// Available reports whether macOS can resolve the iTerm application.
+// Conductor and other hosts may not set TERM_PROGRAM; falling back to
+// iTerm in that case gives a confusing AppleScript syntax error when
+// iTerm is not installed.
+var Available = func() bool {
+	for _, app := range []string{"iTerm2", "iTerm"} {
+		cmd := exec.Command("osascript", "-e", fmt.Sprintf(`id of application "%s"`, app))
+		if err := cmd.Run(); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
 // SpawnTab opens a new iTerm2 tab with the given title, cwd, and command.
 // envVars are attached as an inline prefix to `command` only — so they
 // are present in the spawned process's environment but do NOT persist in

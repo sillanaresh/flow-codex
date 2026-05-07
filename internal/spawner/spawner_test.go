@@ -10,6 +10,10 @@ import (
 // TestDetectFromEnv verifies the TERM_PROGRAM → backend mapping. The
 // Override knob has higher precedence and is checked separately below.
 func TestDetectFromEnv(t *testing.T) {
+	oldAvailable := iterm.Available
+	iterm.Available = func() bool { return true }
+	t.Cleanup(func() { iterm.Available = oldAvailable })
+
 	cases := []struct {
 		termProgram string
 		want        Backend
@@ -29,6 +33,21 @@ func TestDetectFromEnv(t *testing.T) {
 					tc.termProgram, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestDetectFallsBackToTerminalWhenITermUnavailable(t *testing.T) {
+	t.Setenv("TERM_PROGRAM", "")
+	Override = ""
+	oldAvailable := iterm.Available
+	iterm.Available = func() bool { return false }
+	t.Cleanup(func() {
+		Override = ""
+		iterm.Available = oldAvailable
+	})
+
+	if got := Detect(); got != BackendTerminal {
+		t.Errorf("Detect() without TERM_PROGRAM and without iTerm: got %q, want %q", got, BackendTerminal)
 	}
 }
 

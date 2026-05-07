@@ -3,6 +3,7 @@ package app
 import (
 	"flow/internal/flowdb"
 	"flow/internal/iterm"
+	"flow/internal/spawner"
 	"os"
 	"path/filepath"
 	"testing"
@@ -30,6 +31,10 @@ func TestE2EFullRoundtrip(t *testing.T) {
 	}
 
 	// Stub osascript for the whole test.
+	oldBackend := spawner.Override
+	spawner.Override = spawner.BackendITerm
+	t.Cleanup(func() { spawner.Override = oldBackend })
+
 	oldOsa := iterm.Runner
 	iterm.Runner = func(args []string) error { return nil }
 	t.Cleanup(func() { iterm.Runner = oldOsa })
