@@ -172,15 +172,16 @@ func TestTranscriptCmdWithSession(t *testing.T) {
 	db.Exec(`UPDATE tasks SET session_id=?, session_started=?, updated_at=? WHERE slug=?`,
 		sid, now, now, "tx-test")
 
-	// Write a minimal jsonl.
-	encoded := EncodeCwdForClaude(repo)
-	sessionDir := filepath.Join(tmp, ".claude", "projects", encoded)
+	// Write a minimal Codex jsonl.
+	sessionDir := filepath.Join(tmp, ".codex", "sessions", "2026", "05", "07")
 	os.MkdirAll(sessionDir, 0o755)
+	sessionFile := filepath.Join(sessionDir, "rollout-2026-05-07T10-00-00-"+sid+".jsonl")
 	os.WriteFile(
-		filepath.Join(sessionDir, sid+".jsonl"),
-		[]byte(`{"type":"user","message":{"role":"user","content":"test message"},"uuid":"u1","timestamp":"2026-04-12T10:00:00Z","sessionId":"`+sid+`"}`+"\n"),
+		sessionFile,
+		[]byte(`{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"test message"}]}}`+"\n"),
 		0o644,
 	)
+	db.Exec(`UPDATE tasks SET transcript_path=? WHERE slug=?`, sessionFile, "tx-test")
 
 	rc := cmdTranscript([]string{"tx-test"})
 	if rc != 0 {

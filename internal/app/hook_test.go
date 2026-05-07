@@ -1,13 +1,17 @@
 package app
 
 import (
+	"bytes"
 	"encoding/json"
+	"flow/internal/flowdb"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
 
 // TestHookSessionStartNoFlowTaskEmitsAmbientHint pins the contract for
-// ad-hoc sessions (e.g. bare `claude` with no FLOW_TASK): the hook must
+// ad-hoc sessions (e.g. bare `codex` with no FLOW_TASK): the hook must
 // emit a value-prop framing that names flow, instructs Skill-tool
 // invocation, and explicitly disclaims any "substantive" gate. The
 // skill — not the hook — owns the decision of whether to offer a task,
@@ -35,7 +39,6 @@ func TestHookSessionStartNoFlowTaskEmitsAmbientHint(t *testing.T) {
 	for _, want := range []string{
 		"already tracks",
 		"`flow` skill",
-		"Skill tool",
 		"knowledge base",
 		"AskUserQuestion",
 		"existing flow task",
@@ -48,7 +51,7 @@ func TestHookSessionStartNoFlowTaskEmitsAmbientHint(t *testing.T) {
 		}
 	}
 	// The hint must NOT mention "substantive" — naming the past gate
-	// just primes Claude to think about gating again. Affirmative
+	// just primes Codex to think about gating again. Affirmative
 	// framing only: load the skill, confirm task binding, proceed.
 	if strings.Contains(ctx, "substantive") {
 		t.Errorf("ambient hint must not mention 'substantive'; got:\n%s", ctx)
@@ -62,7 +65,7 @@ func TestHookSessionStartNoFlowTaskEmitsAmbientHint(t *testing.T) {
 
 // TestHookSessionStartRequiresSkillInvocation pins the invariant that
 // the injected additionalContext explicitly instructs the session to
-// invoke the flow skill via the Skill tool as its first action, and
+// invoke the flow skill as its first action, and
 // mentions the task slug so the agent has something anchor-visible.
 func TestHookSessionStartRequiresSkillInvocation(t *testing.T) {
 	t.Setenv("FLOW_TASK", "some-slug")
@@ -85,9 +88,6 @@ func TestHookSessionStartRequiresSkillInvocation(t *testing.T) {
 		t.Errorf("hookEventName = %q, want SessionStart", parsed.HookSpecificOutput.HookEventName)
 	}
 	ctx := parsed.HookSpecificOutput.AdditionalContext
-	if !strings.Contains(ctx, "Skill tool") {
-		t.Errorf("additionalContext must instruct Skill tool invocation, got:\n%s", ctx)
-	}
 	if !strings.Contains(ctx, "`flow` skill") {
 		t.Errorf("additionalContext must name the `flow` skill, got:\n%s", ctx)
 	}
@@ -103,7 +103,7 @@ func TestHookSessionStartRequiresSkillInvocation(t *testing.T) {
 
 // TestHookUserPromptSubmitAdHocEmitsSkillNudge pins the contract for
 // ad-hoc sessions (FLOW_TASK unset): every prompt must produce a
-// hookSpecificOutput payload that nudges Claude to invoke the flow
+// hookSpecificOutput payload that nudges Codex to invoke the flow
 // skill and apply §4.14 — without keyword gating, since users won't
 // say "create a task" themselves.
 func TestHookUserPromptSubmitAdHocEmitsSkillNudge(t *testing.T) {
@@ -130,7 +130,6 @@ func TestHookUserPromptSubmitAdHocEmitsSkillNudge(t *testing.T) {
 	for _, want := range []string{
 		"already tracks",
 		"`flow` skill",
-		"Skill tool",
 		"knowledge base",
 		"AskUserQuestion",
 		"existing flow task",
@@ -143,7 +142,7 @@ func TestHookUserPromptSubmitAdHocEmitsSkillNudge(t *testing.T) {
 		}
 	}
 	// Must NOT mention "substantive" — see SessionStart test for the
-	// rationale (don't prime Claude on the rejected gate).
+	// rationale (don't prime Codex on the rejected gate).
 	if strings.Contains(ctx, "substantive") {
 		t.Errorf("UserPromptSubmit hint must not mention 'substantive'; got:\n%s", ctx)
 	}
@@ -172,13 +171,52 @@ func TestBuildBootstrapPromptInvokesSkill(t *testing.T) {
 	if !strings.Contains(prompt, "flow skill") && !strings.Contains(prompt, "`flow` skill") {
 		t.Errorf("bootstrap prompt must name the flow skill:\n%s", prompt)
 	}
-	if !strings.Contains(prompt, "Skill tool") {
-		t.Errorf("bootstrap prompt must instruct Skill tool invocation:\n%s", prompt)
-	}
 	if strings.Contains(prompt, "register-session") {
 		t.Errorf("bootstrap prompt should not mention register-session (pre-allocated by flow do):\n%s", prompt)
 	}
 	if !strings.Contains(prompt, "task-x") {
 		t.Errorf("bootstrap prompt must mention the task slug")
+	}
+}
+
+func TestHookSessionStartRegistersCodexSession(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("FLOW_ROOT", filepath.Join(tmp, "flow"))
+	t.Setenv("HOME", tmp)
+	t.Setenv("FLOW_TASK", "bound-task")
+
+	if rc := cmdInit(nil); rc != 0 {
+		t.Fatalf("init rc=%d", rc)
+	}
+	if rc := cmdAdd([]string{"task", "Bound Task", "--slug", "bound-task"}); rc != 0 {
+		t.Fatalf("add rc=%d", rc)
+	}
+
+	oldStdin := os.Stdin
+	r, w, _ := os.Pipe()
+	os.Stdin = r
+	_, _ = w.Write([]byte(`{"session_id":"codex-session-1","transcript_path":"` + filepath.Join(tmp, "session.jsonl") + `","cwd":"` + tmp + `","source":"startup"}`))
+	_ = w.Close()
+	t.Cleanup(func() { os.Stdin = oldStdin })
+
+	out := captureStdout(t, func() {
+		if rc := cmdHookSessionStart(nil); rc != 0 {
+			t.Fatalf("rc=%d", rc)
+		}
+	})
+	if !bytes.Contains([]byte(out), []byte("SessionStart")) {
+		t.Fatalf("expected hook output, got %s", out)
+	}
+
+	db := openFlowDB(t)
+	task, err := flowdb.GetTask(db, "bound-task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !task.SessionID.Valid || task.SessionID.String != "codex-session-1" {
+		t.Fatalf("session_id = %+v, want codex-session-1", task.SessionID)
+	}
+	if !task.TranscriptPath.Valid || !strings.Contains(task.TranscriptPath.String, "session.jsonl") {
+		t.Fatalf("transcript_path = %+v, want session.jsonl", task.TranscriptPath)
 	}
 }

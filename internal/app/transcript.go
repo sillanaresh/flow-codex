@@ -13,7 +13,7 @@ import (
 )
 
 // cmdTranscript implements `flow transcript <task-slug>`. It reads the
-// task's Claude session jsonl and outputs a human-readable conversation
+// task's Codex session jsonl and outputs a human-readable conversation
 // transcript. This enables cross-task context sharing: one task's
 // execution session can pipe the output into its context to learn what
 // happened in a sibling task's conversation.
@@ -74,30 +74,52 @@ func cmdTranscript(args []string) int {
 
 // sessionJSONLPath returns the absolute path to a task's session jsonl file.
 func sessionJSONLPath(task *flowdb.Task) (string, error) {
+	if task.TranscriptPath.Valid && task.TranscriptPath.String != "" {
+		if _, err := os.Stat(task.TranscriptPath.String); err == nil {
+			return task.TranscriptPath.String, nil
+		}
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("no home dir: %w", err)
 	}
+	codexRoot := filepath.Join(home, ".codex", "sessions")
+	var found string
+	_ = filepath.WalkDir(codexRoot, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || found != "" {
+			return nil
+		}
+		if strings.Contains(filepath.Base(path), task.SessionID.String) && strings.HasSuffix(path, ".jsonl") {
+			found = path
+		}
+		return nil
+	})
+	if found != "" {
+		return found, nil
+	}
+
+	// Backward-compatible fallback for older Claude-backed data.
 	encoded := EncodeCwdForClaude(task.WorkDir)
 	p := filepath.Join(home, ".claude", "projects", encoded, task.SessionID.String+".jsonl")
-	if _, err := os.Stat(p); err != nil {
-		return "", fmt.Errorf("session file not found: %s", p)
+	if _, err := os.Stat(p); err == nil {
+		return p, nil
 	}
-	return p, nil
+	return "", fmt.Errorf("session file not found for session %s", task.SessionID.String)
 }
 
 // ---------- jsonl record types ----------
 
-// jsonlRecord is the top-level structure of each line in a Claude session jsonl.
+// jsonlRecord is the top-level structure of each line in a session jsonl.
 type jsonlRecord struct {
 	Type    string          `json:"type"`
 	Message json.RawMessage `json:"message"`
+	Payload json.RawMessage `json:"payload"`
 }
 
 // jsonlMessage is the message body inside user/assistant records.
 type jsonlMessage struct {
-	Role    string            `json:"role"`
-	Content json.RawMessage   `json:"content"`
+	Role    string          `json:"role"`
+	Content json.RawMessage `json:"content"`
 }
 
 // contentBlock represents one block in the content array.
@@ -105,9 +127,9 @@ type contentBlock struct {
 	Type      string          `json:"type"`
 	Text      string          `json:"text"`
 	Thinking  string          `json:"thinking"`
-	Name      string          `json:"name"`      // tool_use: tool name
-	ID        string          `json:"id"`        // tool_use: tool_use_id
-	Input     json.RawMessage `json:"input"`     // tool_use: input params
+	Name      string          `json:"name"`        // tool_use: tool name
+	ID        string          `json:"id"`          // tool_use: tool_use_id
+	Input     json.RawMessage `json:"input"`       // tool_use: input params
 	ToolUseID string          `json:"tool_use_id"` // tool_result
 	Content   json.RawMessage `json:"content"`     // tool_result: content (string or array)
 	IsError   bool            `json:"is_error"`    // tool_result
@@ -155,6 +177,10 @@ func renderTranscript(path string, compact bool) int {
 			}
 			first = false
 			renderAssistantRecord(rec.Message, compact)
+		case "response_item":
+			if renderCodexResponseItem(rec.Payload, compact, !first) {
+				first = false
+			}
 		}
 		// Skip permission-mode, file-history-snapshot, attachment, etc.
 	}
@@ -164,6 +190,71 @@ func renderTranscript(path string, compact bool) int {
 		return 1
 	}
 	return 0
+}
+
+type codexResponsePayload struct {
+	Type      string          `json:"type"`
+	Role      string          `json:"role"`
+	Content   json.RawMessage `json:"content"`
+	Name      string          `json:"name"`
+	Arguments json.RawMessage `json:"arguments"`
+}
+
+func renderCodexResponseItem(raw json.RawMessage, compact bool, leadingBlank bool) bool {
+	var payload codexResponsePayload
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return false
+	}
+	switch payload.Type {
+	case "message":
+		if payload.Role != "user" && payload.Role != "assistant" {
+			return false
+		}
+		var blocks []contentBlock
+		if err := json.Unmarshal(payload.Content, &blocks); err != nil {
+			return false
+		}
+		rendered := false
+		for _, b := range blocks {
+			text := b.Text
+			if text == "" {
+				text = b.Thinking
+			}
+			if text == "" {
+				continue
+			}
+			if leadingBlank || rendered {
+				fmt.Println()
+			}
+			if payload.Role == "user" {
+				fmt.Println("─── User ───")
+			} else if b.Type == "thinking" {
+				if compact {
+					continue
+				}
+				fmt.Println("─── Thinking ───")
+			} else {
+				fmt.Println("─── Assistant ───")
+			}
+			fmt.Println(text)
+			rendered = true
+			leadingBlank = false
+		}
+		return rendered
+	case "function_call":
+		if payload.Name == "" {
+			return false
+		}
+		if leadingBlank {
+			fmt.Println()
+		}
+		fmt.Printf("─── Tool: %s ───\n", payload.Name)
+		if len(payload.Arguments) > 0 && string(payload.Arguments) != "null" {
+			fmt.Println(string(payload.Arguments))
+		}
+		return true
+	}
+	return false
 }
 
 func renderUserRecord(raw json.RawMessage, compact bool) {

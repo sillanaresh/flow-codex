@@ -1,7 +1,7 @@
 ---
 name: flow
 description: |
-  Personal task and Claude session manager. CLI binary is `flow` (assumed
+  Personal task and Codex session manager. CLI binary is `flow` (assumed
   on PATH) and stores metadata in ~/.flow/flow.db (SQLite). Use this skill when the
   user asks about their work, tasks, or projects in any natural phrasing —
   including but not limited to: "what's left", "what's remaining",
@@ -17,7 +17,7 @@ description: |
   on", "blocked on", "stuck until", "mark done", "archive", "weekly
   review", "clean up my tasks", or when the user invokes any
   `flow <subcommand>` directly. Also use whenever the user asks you to
-  bootstrap a new Claude session on a task or tell them about their
+  bootstrap a new Codex session on a task or tell them about their
   in-flight work.
 ---
 
@@ -26,16 +26,16 @@ description: |
 ## 1. What flow is
 
 `flow` is a small CLI (assumed on `$PATH`) that the user uses to track
-personal work and bootstrap per-task Claude sessions. Metadata (projects,
+personal work and bootstrap per-task Codex sessions. Metadata (projects,
 tasks, workdirs, session IDs) lives in a single SQLite database at
 `~/.flow/flow.db`. Free-form plan content lives on disk as markdown
 "briefs" at `~/.flow/projects/<slug>/brief.md` and
 `~/.flow/tasks/<slug>/brief.md`. Progress notes accumulate as dated
 markdown files under each entity's `updates/` subdirectory. The user runs
-one long-lived Claude session per task in its own iTerm tab, resumed via
+one long-lived Codex session per task in its own terminal tab, resumed via
 `flow do <task>`.
 
-You are speaking inside one of those Claude sessions (or the user's
+You are speaking inside one of those Codex sessions (or the user's
 ambient "dispatch" session). Your job is to interpret the user's natural
 language requests and turn them into the exact `flow` commands and file
 edits they imply. You never edit `flow.db` directly. You never solve
@@ -56,7 +56,7 @@ first; let them choose what happens next.
 
 1. In 2–3 sentences, describe what you can do for the user with
    flow under the hood — capture work as briefs, log progress
-   notes, resume Claude sessions across days, track what they're
+   notes, resume Codex sessions across days, track what they're
    waiting on. Frame it as your capabilities, not commands. The
    user does not need to learn flow's CLI.
 2. Use `AskUserQuestion` (header: "What now?") to offer the main
@@ -85,8 +85,8 @@ an intent, follow the matching recipe instead of re-asking via §1a.
   `~/.flow/tasks/<slug>/workspace/` for floating tasks), a priority, a
   status (`backlog`, `in-progress`, `done`), an optional `project_slug`,
   an optional `waiting_on` freeform note, and a `brief.md`. Tasks also
-  carry a Claude `session_id` once `flow do` has bootstrapped a session
-  for them.
+  carry a Codex `session_id` and `transcript_path` once the Codex
+  SessionStart hook has registered a spawned session for them.
 - **Playbooks** are reusable, runnable definitions. A playbook has a
   name, slug, work_dir, optional `project_slug`, and a `brief.md` that
   describes what each invocation should do. Each invocation creates a
@@ -141,13 +141,13 @@ basics in this order:
    `AskUserQuestion` (header: "Open it now?", options:
    "Open it now" / "Later, just save") to ask whether to run
    `flow do <slug>`. Briefly explain in the question: a dedicated
-   Claude session gets the brief, updates, and repo conventions
+   Codex session gets the brief, updates, and repo conventions
    automatically. If "Open it now", proceed to §4.4. If "Later",
    stop here.
 
 4. **Mention the knowledge base.** "As we work together, I'll
    automatically note durable facts about you and your org in
-   `~/.flow/kb/`. These notes carry across sessions so future Claude
+   `~/.flow/kb/`. These notes carry across sessions so future Codex
    conversations have context without you repeating yourself."
 
 5. **Point to daily use.** "From any session, just say 'what should I
@@ -218,18 +218,20 @@ no fuzzy or substring matching. Use `--slug` to pick a short, memorable
 slug at creation time (e.g. `--slug caas-exit`). If omitted, a slug is
 auto-generated from the name (truncated to ~6 words).
 
-## 4a. Interactive choices (use `AskUserQuestion` everywhere)
+## 4a. Interactive choices
 
 **This section overrides any inline prose phrasing later in the skill.**
 If a later section says "offer X", "ask Y", or "confirm Z", that
-always means "invoke `AskUserQuestion` with appropriate options" —
-never a prose question typed into the chat.
+means "present a structured choice with 2-4 clear options." When Codex
+has an interactive choice tool available, use it. If no such tool is
+available in the current host, ask a compact numbered-choice question in
+chat and wait for the user's answer.
 
-Every choice the user makes — always AskUserQuestion, never a prose
-question. Yes/no confirmations, pick-one-of-several, priority, slug
-suggestions, project attachment, mutation confirmations, "want me to
-do X?" — every single one runs through the tool so the user can click
-to select instead of typing. Common patterns:
+Every choice the user makes should be structured: yes/no confirmations,
+pick-one-of-several, priority, slug suggestions, project attachment,
+mutation confirmations, "want me to do X?" — all of these should show
+explicit options instead of hiding the choice in a long paragraph.
+Common patterns:
 
 | Pattern | Options |
 |---------|---------|
@@ -238,24 +240,25 @@ to select instead of typing. Common patterns:
 | Priority | "High", "Medium", "Low" |
 | Mutation confirm | "Yes, do it" / "No, wait" with the action named in the description |
 
-Keep `header` under 12 chars. Put enough context in `question` so
-the choice is clear without scrolling back. If the user already
-answered in their message, don't re-ask — just use their answer.
+If using a choice tool, keep `header` under 12 chars. Put enough
+context in the question so the choice is clear without scrolling back.
+If asking in chat, keep it to one sentence plus a numbered list. If the
+user already answered in their message, don't re-ask — just use their
+answer.
 
-**Prose questions are deprecated.** Don't write "Want me to do X?"
-or "Should I do Y?" or "(yes/no)" in chat — those force the user to
-type a free-text reply. The tool produces clickable options; always
-prefer the tool.
+Avoid vague prose questions like "Want me to do X?" or "(yes/no)".
+Name the options directly so the user can answer with one word or one
+number.
 
 **Mid-interview drift.** Within an open-ended interview (intake,
 deferred-section prompt), the parent question may be free-form
 ("Why?", "Done when?") but follow-up clarifications often narrow into
 enumerable choices (architectures, install methods, yes/no). The
-moment a sub-question has 2–4 discrete options, switch to
-AskUserQuestion. Don't keep typing prose just because you started in
-prose. The "interview" framing governs the *opening* question; every
-narrowing inside it follows the same always-AskUserQuestion rule as
-the rest of the skill.
+moment a sub-question has 2–4 discrete options, switch to a structured
+choice. Don't keep typing vague prose just because you started in prose.
+The "interview" framing governs the *opening* question; every narrowing
+inside it follows the same structured-choice rule as the rest of the
+skill.
 
 ## 5. Core workflows
 
@@ -383,7 +386,7 @@ work_dir: <path>
 - <question 1>
 
 ---
-*Before you start on this task, read CLAUDE.md in the work_dir.*
+*Before you start on this task, review AGENTS.md guidance in the work_dir.*
 ```
 
 Finally, use `AskUserQuestion` (header: "Open now?", options:
@@ -450,7 +453,7 @@ its own, it's the start of a two-or-more-step workflow.
        question: "Which session mode for <task-slug>?",
        header: "Session mode",
        options: [
-         { label: "Regular",          description: "Normal Claude session with tool-approval prompts (safer)" },
+         { label: "Regular",          description: "Normal Codex session with tool-approval prompts (safer)" },
          { label: "Skip permissions", description: "Pass --dangerously-skip-permissions (faster, no prompts)" }
        ],
        multiSelect: false
@@ -472,7 +475,7 @@ its own, it's the start of a two-or-more-step workflow.
 exported the env vars. Your job is done. Report "opened tab: <title>"
 and stop. Do NOT:
 
-- Run diagnostic commands like `pgrep`, `ls ~/.claude/projects/...`,
+- Run diagnostic commands like `pgrep`, `ls ~/.codex/sessions/...`,
   or `osascript` to try to verify the tab opened.
 - Try to spawn an iTerm tab yourself with osascript. `flow do` already
   did this.
@@ -493,8 +496,8 @@ right Settings pane. When you see that error:
 
 1. **Trust the error verbatim.** It says "Terminal" because macOS
    attributes Accessibility to the responsible parent app, which is
-   Terminal.app — NOT Claude Code, NOT the flow binary. Do not advise
-   the user to toggle "Claude" or "flow"; that wastes their time.
+   Terminal.app — NOT Codex, NOT the flow binary. Do not advise
+   the user to toggle "Codex" or "flow"; that wastes their time.
 2. **Open the Accessibility pane for them**: run
    `open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"`.
 3. **Tell the user, in plain language**, what to do next: enable the
@@ -509,7 +512,7 @@ right Settings pane. When you see that error:
 Macros for this: do not invent more candidate apps to toggle, do not
 suggest the user reinstall flow, do not attempt to grant Accessibility
 yourself. macOS guards Accessibility deliberately — there is no CLI to
-self-grant it, and Claude cannot bypass that.
+self-grant it, and Codex cannot bypass that.
 
 ### 4.5 Save a progress note
 
@@ -581,7 +584,7 @@ it".
 
 **Why closing matters — read this before treating `flow done` as
 bookkeeping.** `flow done` is not just a status flip. It runs a
-headless Claude sweep over the task's transcript that distills
+headless Codex sweep over the task's transcript that distills
 durable facts into the user's KB (`~/.flow/kb/`) and, when the task
 has a project, writes a project update at
 `~/.flow/projects/<slug>/updates/` summarizing what got done and
@@ -602,8 +605,8 @@ closure is a silent loss of durable knowledge.
    `AskUserQuestion` (header: "Closing note?", options:
    "Yes, save a note first" / "No, just mark done") to offer.
    On "Yes", run the §4.5 recipe first, then continue.
-3. Run `flow done <ref>`. **Do not close the iTerm tab** and **do
-   not kill the Claude session** — `flow done` deliberately leaves
+3. Run `flow done <ref>`. **Do not close the terminal tab** and **do
+   not kill the Codex session** — `flow done` deliberately leaves
    both intact. The session_id stays on the task row so a future
    reopen can still resume it. The close-out sweep runs after the
    status flip; relay any NUDGE block `flow done` prints back to
@@ -818,7 +821,7 @@ category of fact. Signals that it's time to Read one:
   want to reflect the user's working style accurately → read `user.md`.
 - The user asks "how do we usually do X?" or "what's our convention
   for Y?" → read `processes.md`.
-- A brief or CLAUDE.md uses terminology you don't recognize (e.g.
+- A brief or AGENTS.md uses terminology you don't recognize (e.g.
   an internal codename, a product term, a legacy component name) →
   read the relevant kb file for definitions.
 - You're generating cross-cutting advice ("how should I approach
@@ -1195,7 +1198,7 @@ via `AskUserQuestion`.
    `which flow` if unsure).
 4. Run `flow skill update` to refresh the embedded skill on disk and
    re-wire both the SessionStart and UserPromptSubmit hooks in
-   `~/.claude/settings.json`. (The auto-upgrade path runs the same
+   `~/.codex/hooks.json`. (The auto-upgrade path runs the same
    refresh on the next `flow` invocation, but explicit is better and
    surfaces any errors immediately.)
 5. Run `flow --version` again and confirm the version changed. If it
@@ -1282,8 +1285,8 @@ work_dir: <absolute path>
 - <question 2>
 
 ---
-*Before you start on this task, read CLAUDE.md in the work_dir and any
-nested CLAUDE.md files in the subtree you plan to modify. Then read
+*Before you start on this task, review AGENTS.md guidance in the work_dir and any
+nested AGENTS.md files in the subtree you plan to modify. Then read
 every file under `updates/` (if any exist) to catch up on prior
 progress.*
 ```
@@ -1458,27 +1461,25 @@ instead.
 
 ## 9. The execution-session bootstrap contract
 
-When `flow do <task>` spawns a Claude session in a new iTerm tab, it
-pre-allocates a UUID, writes it to `tasks.session_id` before spawning,
-and passes it to `claude --session-id <uuid>`. This makes the session's
-jsonl file appear at the deterministic path
-`~/.claude/projects/<encoded-cwd>/<uuid>.jsonl`. There is no
-self-registration step — the DB is authoritative from the moment the
-tab opens.
+When `flow do <task>` spawns a Codex session in a new terminal tab, Codex
+generates the session id and transcript path. The `flow hook session-start`
+handler receives those values from Codex on stdin and writes them to
+`tasks.session_id` and `tasks.transcript_path`. That hook registration is
+what makes future resumes deterministic.
 
 Subsequent `flow do <same-task>` calls read that UUID and spawn
-`claude --resume <uuid>` to continue the same conversation.
+`codex resume <uuid>` to continue the same conversation.
 
 **If you are the execution session spawned by `flow do`:**
 
 Do ALL of the following in order, before touching any code or
 proposing any plan:
 
-1. **Invoke the flow skill via the `Skill` tool.** The `flow hook
+1. **Invoke the `flow` skill.** The `flow hook
    session-start` output already names this step, but the hook is
-   belt-and-braces — the Skill tool is the authoritative way to load
-   the operating manual that governs workflows, KB discipline, and
-   scope-creep detection.
+   belt-and-braces — the skill is the authoritative way to load the
+   operating manual that governs workflows, KB discipline, and scope-creep
+   detection.
 
 2. **Load the task context:**
    ```
@@ -1525,9 +1526,9 @@ proposing any plan:
 
    Again, skip the project's `kb:` section at bootstrap.
 
-4. **Load repo conventions.** Read `CLAUDE.md` in your `work_dir` (if
-   present), plus any nested `CLAUDE.md` files under subdirectories
-   you plan to modify. These are authoritative for build commands,
+4. **Load repo conventions.** Review AGENTS.md guidance already loaded by
+   Codex, plus any nested `AGENTS.md` files under subdirectories you plan
+   to modify. These are authoritative for build commands,
    test commands, style, and gotchas — they override any assumption
    you might make from the brief.
 
@@ -1571,7 +1572,7 @@ yours), use:
 flow transcript <sibling-task-slug>
 ```
 
-This outputs a readable conversation transcript from that task's Claude
+This outputs a readable conversation transcript from that task's Codex
 session — user messages, assistant messages, tool calls, and results.
 Use `--compact` to omit tool results and thinking blocks for a shorter
 overview. Pipe through `grep` or `head` if the full transcript is too
@@ -1592,11 +1593,11 @@ flow update task <ref> [--session-id <uuid>] [--work-dir <path>] [--mkdir]
 
 When to use:
 
-- **`--session-id <uuid>`** — the user spawned a Claude session outside
-  `flow do` (e.g. plain `claude` in a terminal) and wants flow to track
+- **`--session-id <uuid>`** — the user spawned a Codex session outside
+  `flow do` (e.g. plain `codex` in a terminal) and wants flow to track
   that session going forward. Or: a session jsonl was restored from a
   backup under a different UUID and they want `flow do` to resume it.
-  UUID must be v4 format — claude enforces that on `--session-id`.
+  UUID must be lowercase UUID format.
 - **`--work-dir <path>`** — the repo moved on disk (renamed parent,
   moved between drives, cloned to a new path). Pass `--mkdir` if the
   new path doesn't exist yet.
@@ -1607,9 +1608,9 @@ manual correction tool — do not run it as a workaround for a bug in
 
 ## 10. Environment variables flow sets
 
-When `flow do <task>` spawns an iTerm tab, it attaches these env vars
-to the `claude` process (inline on the command line — they do NOT
-persist in the tab's shell after claude exits):
+When `flow do <task>` spawns a terminal tab, it attaches these env vars
+to the `codex` process (inline on the command line — they do NOT
+persist in the tab's shell after codex exits):
 
 - `FLOW_TASK=<task-slug>` — the current task
 - `FLOW_PROJECT=<project-slug>` — the current project, if the task has one

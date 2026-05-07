@@ -14,8 +14,8 @@ import (
 // set/clear, priority change, update file drop, done, archive, unarchive,
 // workdir registry.
 //
-// Mocks claudeRunner and iterm.Runner so nothing actually spawns
-// claude or osascript. Uses a temp FLOW_ROOT so the user's real ~/.flow is
+// Mocks codexRunner and iterm.Runner so nothing actually spawns
+// codex or osascript. Uses a temp FLOW_ROOT so the user's real ~/.flow is
 // untouched.
 func TestE2EFullRoundtrip(t *testing.T) {
 	tmp := t.TempDir()
@@ -34,20 +34,14 @@ func TestE2EFullRoundtrip(t *testing.T) {
 	iterm.Runner = func(args []string) error { return nil }
 	t.Cleanup(func() { iterm.Runner = oldOsa })
 
-	// Stub the headless claude runner so cmdDone doesn't try to invoke
-	// the real claude CLI for its post-flip KB sweep.
-	oldClaude := claudeRunner
-	claudeRunner = func(slug, prompt string) error { return nil }
-	t.Cleanup(func() { claudeRunner = oldClaude })
+	// Stub the headless codex runner so cmdDone doesn't try to invoke
+	// the real codex CLI for its post-flip KB sweep.
+	oldCodex := codexRunner
+	codexRunner = func(task *flowdb.Task, projectSlug, prompt string) error { return nil }
+	t.Cleanup(func() { codexRunner = oldCodex })
 
-	// Pin the UUID `flow do` allocates so downstream assertions can
-	// reference a known session_id. In production, newUUID produces a
-	// random v4 UUID that is also written to tasks.session_id before
-	// the iTerm tab spawns and passed to `claude --session-id`.
+	// Pin the Codex-generated session id we simulate via the SessionStart hook.
 	const fixedSID = "e2e-session-uuid"
-	oldNewUUID := newUUID
-	newUUID = func() (string, error) { return fixedSID, nil }
-	t.Cleanup(func() { newUUID = oldNewUUID })
 
 	step := func(name string, rc int) {
 		t.Helper()
@@ -86,9 +80,8 @@ func TestE2EFullRoundtrip(t *testing.T) {
 		t.Fatalf("floating task workspace not created: %v", err)
 	}
 
-	// 5. do — pre-allocates the session UUID and spawns the tab. The
-	// session_id lands in the DB synchronously; no self-registration
-	// step is needed.
+	// 5. do — spawns a fresh Codex tab. Codex generates the session id,
+	// then the SessionStart hook registers it back into flow.
 	step("do", cmdDo([]string{"fix-auth-token-expiry"}))
 	db, err := flowdb.OpenDB(filepath.Join(flowRoot, "flow.db"))
 	if err != nil {
@@ -99,33 +92,39 @@ func TestE2EFullRoundtrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !task.SessionID.Valid || task.SessionID.String != fixedSID {
-		t.Errorf("session_id after fresh spawn: got %+v, want %s", task.SessionID, fixedSID)
-	}
 	if task.Status != "in-progress" {
 		t.Errorf("status = %q, want in-progress", task.Status)
 	}
 
-	// 5b. Write real jsonl content at the path claude would have used
-	// given our pre-allocated session_id, so transcript can parse it.
+	// 5b. Write real Codex jsonl content and simulate the SessionStart
+	// hook registration so transcript and resume can find it.
 	{
-		encoded := EncodeCwdForClaude(task.WorkDir)
-		sessionDir := filepath.Join(tmp, ".claude", "projects", encoded)
+		sessionDir := filepath.Join(tmp, ".codex", "sessions", "2026", "05", "07")
 		if err := os.MkdirAll(sessionDir, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		sessionFile := filepath.Join(sessionDir, fixedSID+".jsonl")
-		content := `{"type":"user","message":{"role":"user","content":"Hello"},"uuid":"u1","timestamp":"2026-04-12T10:00:00Z","sessionId":"` + fixedSID + `"}` + "\n" +
-			`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Hi there!"}]},"uuid":"a1","timestamp":"2026-04-12T10:00:01Z","sessionId":"` + fixedSID + `"}` + "\n"
+		sessionFile := filepath.Join(sessionDir, "rollout-2026-05-07T10-00-00-"+fixedSID+".jsonl")
+		content := `{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Hello"}]}}` + "\n" +
+			`{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Hi there!"}]}}` + "\n"
 		if err := os.WriteFile(sessionFile, []byte(content), 0o644); err != nil {
 			t.Fatalf("write session jsonl: %v", err)
 		}
+		registerCodexSession("fix-auth-token-expiry", codexHookInput{
+			SessionID:      fixedSID,
+			TranscriptPath: sessionFile,
+			CWD:            repo,
+			Source:         "startup",
+		})
+	}
+	task, _ = flowdb.GetTask(db, "fix-auth-token-expiry")
+	if !task.SessionID.Valid || task.SessionID.String != fixedSID {
+		t.Errorf("session_id after hook registration: got %+v, want %s", task.SessionID, fixedSID)
 	}
 
 	// 5c. transcript — should succeed now that session exists.
 	step("transcript", cmdTranscript([]string{"fix-auth-token-expiry"}))
 
-	// 6. do again — now session_id is populated, should spawn --resume.
+	// 6. do again — now session_id is populated, should spawn codex resume.
 	step("do resume", cmdDo([]string{"fix-auth-token-expiry"}))
 	task, _ = flowdb.GetTask(db, "fix-auth-token-expiry")
 	if task.SessionID.String != fixedSID {

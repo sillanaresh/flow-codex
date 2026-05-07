@@ -44,19 +44,13 @@ func seedTask(t *testing.T, slug string) {
 	}
 }
 
-// TestCmdDoFreshAllocatesSessionID verifies the pre-allocation contract:
-// a fresh task gets a UUID written to tasks.session_id and spawns
-// `claude --session-id <uuid> "<prompt>"` so the jsonl file claude creates
-// lands at the deterministic path keyed on that UUID.
-func TestCmdDoFreshAllocatesSessionID(t *testing.T) {
+// TestCmdDoFreshSpawnsCodex verifies the Codex bootstrap contract:
+// a fresh task is marked in-progress and spawns `codex <prompt>`. The
+// SessionStart hook registers Codex's generated session id later.
+func TestCmdDoFreshSpawnsCodex(t *testing.T) {
 	setupFlowRoot(t)
 	seedTask(t, "fresh-task")
 	_, getScript := stubITerm(t)
-
-	const pinnedSID = "11111111-2222-3333-4444-555555555555"
-	oldNewUUID := newUUID
-	newUUID = func() (string, error) { return pinnedSID, nil }
-	t.Cleanup(func() { newUUID = oldNewUUID })
 
 	if rc := cmdDo([]string{"fresh-task"}); rc != 0 {
 		t.Fatalf("rc=%d", rc)
@@ -67,11 +61,11 @@ func TestCmdDoFreshAllocatesSessionID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !task.SessionID.Valid || task.SessionID.String != pinnedSID {
-		t.Errorf("session_id after fresh spawn: got %+v, want %s", task.SessionID, pinnedSID)
+	if task.SessionID.Valid {
+		t.Errorf("session_id should be registered by hook, not cmdDo; got %+v", task.SessionID)
 	}
-	if !task.SessionStarted.Valid {
-		t.Error("session_started should be set after fresh spawn")
+	if task.SessionStarted.Valid {
+		t.Errorf("session_started should be registered by hook, not cmdDo; got %+v", task.SessionStarted)
 	}
 	if task.Status != "in-progress" {
 		t.Errorf("status: got %q, want in-progress", task.Status)
@@ -81,34 +75,20 @@ func TestCmdDoFreshAllocatesSessionID(t *testing.T) {
 	if strings.Contains(script, "--resume") {
 		t.Errorf("fresh spawn should not use --resume: %s", script)
 	}
-	if !strings.Contains(script, "--session-id "+pinnedSID) {
-		t.Errorf("fresh spawn should pass --session-id %s: %s", pinnedSID, script)
+	if !strings.Contains(script, " codex ") {
+		t.Errorf("fresh spawn should invoke codex, got: %s", script)
 	}
 	if !strings.Contains(script, "fresh-task") {
 		t.Errorf("spawn script missing task slug: %s", script)
 	}
 }
 
-// TestCmdDoFreshSpawnFailureRollsBackSessionID pins the rollback
-// invariant: when a fresh-bootstrap spawn fails (e.g. Terminal.app
-// Accessibility denied), the session_id we pre-allocated must be
-// nilled out so the next `flow do` retries bootstrap fresh. Without
-// this, the DB ends up with a session_id pointing at a non-existent
-// jsonl file, and every subsequent `flow do` runs `claude --resume
-// <uuid>` which fails with "No conversation found" indefinitely.
-//
-// Repro of the user-reported bug: spawn-failure → DB has orphan
-// session_id → next flow do takes resume path → claude can't find
-// the jsonl. The fix preserves the status flip (task is in-progress
-// even though spawn failed) but undoes the session_id allocation.
-func TestCmdDoFreshSpawnFailureRollsBackSessionID(t *testing.T) {
+// TestCmdDoFreshSpawnFailureLeavesNoSessionID verifies that a fresh
+// Codex spawn failure cannot leave an orphan session_id because cmdDo
+// does not know or write Codex's generated id.
+func TestCmdDoFreshSpawnFailureLeavesNoSessionID(t *testing.T) {
 	setupFlowRoot(t)
 	seedTask(t, "fail-task")
-
-	const pinnedSID = "ffffffff-aaaa-bbbb-cccc-dddddddddddd"
-	oldNewUUID := newUUID
-	newUUID = func() (string, error) { return pinnedSID, nil }
-	t.Cleanup(func() { newUUID = oldNewUUID })
 
 	// Stub iterm.Runner to fail every call — simulates the
 	// Accessibility-denied path on Terminal.app, but works equally
@@ -127,7 +107,7 @@ func TestCmdDoFreshSpawnFailureRollsBackSessionID(t *testing.T) {
 		t.Fatal(err)
 	}
 	if task.SessionID.Valid {
-		t.Errorf("session_id should be NULL after spawn failure rollback; got %q", task.SessionID.String)
+		t.Errorf("session_id should be NULL after spawn failure; got %q", task.SessionID.String)
 	}
 	if task.SessionStarted.Valid {
 		t.Errorf("session_started should be NULL after spawn failure rollback; got %q", task.SessionStarted.String)
@@ -201,15 +181,43 @@ func TestCmdDoResumesExistingSession(t *testing.T) {
 		t.Error("session_last_resumed should be set on resume")
 	}
 	script := getScript()
-	if !strings.Contains(script, "--resume existing-sid") {
-		t.Errorf("resume spawn should use --resume: %s", script)
+	if !strings.Contains(script, "codex resume existing-sid") {
+		t.Errorf("resume spawn should use codex resume: %s", script)
 	}
 }
 
-// TestCmdDoFreshRotatesStaleSession verifies --fresh overwrites an
-// existing session_id with a newly-allocated UUID and spawns with that
-// UUID via --session-id (not --resume).
-func TestCmdDoFreshRotatesStaleSession(t *testing.T) {
+func TestCmdDoDangerouslySkipPermissionsUsesCodexFlag(t *testing.T) {
+	setupFlowRoot(t)
+	seedTask(t, "danger-task")
+
+	_, getScript := stubITerm(t)
+	if rc := cmdDo([]string{"danger-task", "--dangerously-skip-permissions"}); rc != 0 {
+		t.Fatalf("fresh rc=%d", rc)
+	}
+	script := getScript()
+	if !strings.Contains(script, "codex --dangerously-bypass-approvals-and-sandbox ") {
+		t.Errorf("fresh dangerous spawn should put Codex flag before prompt, got:\n%s", script)
+	}
+
+	db := openFlowDB(t)
+	if _, err := db.Exec(`UPDATE tasks SET session_id='danger-sid', session_started=? WHERE slug='danger-task'`, flowdb.NowISO()); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	if rc := cmdDo([]string{"danger-task", "--dangerously-skip-permissions"}); rc != 0 {
+		t.Fatalf("resume rc=%d", rc)
+	}
+	script = getScript()
+	if !strings.Contains(script, "codex resume --dangerously-bypass-approvals-and-sandbox danger-sid") {
+		t.Errorf("resume dangerous spawn should put Codex flag before session id, got:\n%s", script)
+	}
+}
+
+// TestCmdDoFreshStartsNewCodexSession verifies --fresh starts a new Codex
+// session instead of resuming the stored session id. The old id remains
+// until the SessionStart hook registers the replacement.
+func TestCmdDoFreshStartsNewCodexSession(t *testing.T) {
 	setupFlowRoot(t)
 	seedTask(t, "stale-task")
 
@@ -219,26 +227,21 @@ func TestCmdDoFreshRotatesStaleSession(t *testing.T) {
 	}
 	db.Close()
 
-	const pinnedSID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
-	oldNewUUID := newUUID
-	newUUID = func() (string, error) { return pinnedSID, nil }
-	t.Cleanup(func() { newUUID = oldNewUUID })
-
 	_, getScript := stubITerm(t)
 	if rc := cmdDo([]string{"stale-task", "--fresh"}); rc != 0 {
 		t.Fatalf("rc=%d", rc)
 	}
 	db = openFlowDB(t)
 	task, _ := flowdb.GetTask(db, "stale-task")
-	if task.SessionID.String != pinnedSID {
-		t.Errorf("session_id after --fresh: got %q, want %s", task.SessionID.String, pinnedSID)
+	if task.SessionID.String != "stale-uuid" {
+		t.Errorf("session_id should remain until hook registration: got %q", task.SessionID.String)
 	}
 	script := getScript()
 	if strings.Contains(script, "--resume") {
 		t.Errorf("--fresh should not spawn --resume: %s", script)
 	}
-	if !strings.Contains(script, "--session-id "+pinnedSID) {
-		t.Errorf("--fresh should spawn with --session-id %s: %s", pinnedSID, script)
+	if !strings.Contains(script, " codex ") {
+		t.Errorf("--fresh should spawn a new codex session: %s", script)
 	}
 }
 
@@ -291,11 +294,11 @@ func TestCmdDoFuzzyExactWins(t *testing.T) {
 	}
 }
 
-// TestCmdDoSpawnsClaudeNotFlowde pins the post-flowde contract: `flow do`
-// shells out to `claude` directly (no wrapper) for both the fresh
+// TestCmdDoSpawnsCodexNotFlowde pins the post-flowde contract: `flow do`
+// shells out to `codex` directly (no wrapper) for both the fresh
 // bootstrap and the resume paths. Skill freshness is now an explicit
 // `flow skill update` step, not an implicit per-launch refresh.
-func TestCmdDoSpawnsClaudeNotFlowde(t *testing.T) {
+func TestCmdDoSpawnsCodexNotFlowde(t *testing.T) {
 	setupFlowRoot(t)
 	seedTask(t, "wrap-fresh")
 
@@ -304,8 +307,8 @@ func TestCmdDoSpawnsClaudeNotFlowde(t *testing.T) {
 		t.Fatalf("fresh rc=%d", rc)
 	}
 	script := getScript()
-	if !strings.Contains(script, " claude --session-id ") {
-		t.Errorf("fresh spawn must invoke claude --session-id, got:\n%s", script)
+	if !strings.Contains(script, " codex ") {
+		t.Errorf("fresh spawn must invoke codex, got:\n%s", script)
 	}
 	// Guard against accidental reintroduction of the flowde wrapper.
 	if strings.Contains(script, "flowde") {
@@ -322,8 +325,8 @@ func TestCmdDoSpawnsClaudeNotFlowde(t *testing.T) {
 		t.Fatalf("resume rc=%d", rc)
 	}
 	script = getScript()
-	if !strings.Contains(script, " claude --resume resume-sid") {
-		t.Errorf("resume spawn must invoke claude --resume <uuid>, got:\n%s", script)
+	if !strings.Contains(script, " codex resume resume-sid") {
+		t.Errorf("resume spawn must invoke codex resume <uuid>, got:\n%s", script)
 	}
 	if strings.Contains(script, "flowde") {
 		t.Errorf("resume spawn should not invoke flowde, got:\n%s", script)
@@ -331,11 +334,9 @@ func TestCmdDoSpawnsClaudeNotFlowde(t *testing.T) {
 }
 
 // TestCmdDoConcurrentFreshTasks verifies two concurrent cmdDo calls on a
-// fresh task don't corrupt DB state. The BEGIN IMMEDIATE lock serializes
-// the txs: the winner allocates a UUID and writes it; the loser sees
-// session_id already set and falls through to the resume path (spawning
-// `claude --resume <winner-uuid>`). Both tabs end up pointing at the same
-// session — pre-existing documented race outcome, no lost UUIDs.
+// fresh task don't corrupt DB state. Codex generates session IDs after
+// spawn, so both concurrent calls may start fresh sessions; hook
+// registration decides the final stored session.
 func TestCmdDoConcurrentFreshTasks(t *testing.T) {
 	setupFlowRoot(t)
 	seedTask(t, "race-task")
@@ -355,8 +356,8 @@ func TestCmdDoConcurrentFreshTasks(t *testing.T) {
 	}
 	db := openFlowDB(t)
 	task, _ := flowdb.GetTask(db, "race-task")
-	if !task.SessionID.Valid || task.SessionID.String == "" {
-		t.Errorf("session_id should be populated after races (got %+v)", task.SessionID)
+	if task.SessionID.Valid {
+		t.Errorf("session_id should be populated by hook registration, got %+v", task.SessionID)
 	}
 	if n := atomic.LoadInt64(spawns); n != 2 {
 		t.Errorf("iTerm spawn count=%d, want 2", n)

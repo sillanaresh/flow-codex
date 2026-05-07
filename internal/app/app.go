@@ -1,4 +1,4 @@
-// Package app implements the flow CLI — personal task and Claude session
+// Package app implements the flow CLI — personal task and Codex session
 // manager backed by SQLite.
 package app
 
@@ -81,7 +81,7 @@ func Run(args []string) int {
 }
 
 func printUsage() {
-	fmt.Println(`flow — personal task and Claude session manager
+	fmt.Println(`flow — personal task and Codex session manager
 
 Setup:
   flow init
@@ -96,7 +96,7 @@ Create:
 Sessions:
   flow do                <ref> [--fresh] [--dangerously-skip-permissions]
   flow done              <ref>
-  flow hook session-start                      (SessionStart hook handler — wire via ~/.claude/settings.json)
+  flow hook session-start                      (SessionStart hook handler — wire via ~/.codex/hooks.json)
 
 Read:
   flow show task       [<ref>]

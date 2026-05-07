@@ -7,10 +7,8 @@ import (
 )
 
 // newUUID returns a new UUID v4 in the standard 8-4-4-4-12 hex format.
-// `flow do` pre-generates a UUID, claims it in the DB via an optimistic
-// UPDATE, and then passes it to `claude --session-id` so the spawned
-// session is created with exactly that UUID. No stream parsing, no
-// filesystem polling, no post-hoc capture.
+// Kept for tests and older migration helpers. Codex sessions generate their
+// own IDs and register them through the SessionStart hook.
 //
 // Overridable in tests so concurrency tests can inject deterministic IDs.
 var newUUID = func() (string, error) {
@@ -25,7 +23,7 @@ var newUUID = func() (string, error) {
 
 // EncodeCwdForClaude encodes an absolute cwd path for Claude Code's
 // ~/.claude/projects/<dir> directory naming. Used by `flow transcript`
-// to locate a known session_id's jsonl on disk.
+// only as a backward-compatible fallback for old Claude-backed tasks.
 //
 // Rule (derived empirically by scanning ~/.claude/projects/* against the
 // original cwd recorded inside each dir's *.jsonl files — CC's source is

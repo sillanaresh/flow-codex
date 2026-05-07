@@ -11,7 +11,7 @@ import (
 
 // cmdUpdate dispatches `flow update <kind>`. v1 supports `task` only;
 // the command exists as a manual escape hatch when the session_id or
-// work_dir drifts from what the DB has (e.g. the user spawned claude
+// work_dir drifts from what the DB has (e.g. the user spawned codex
 // outside `flow do`, or moved a repo on disk).
 func cmdUpdate(args []string) int {
 	if len(args) == 0 {
@@ -26,9 +26,9 @@ func cmdUpdate(args []string) int {
 	return 2
 }
 
-// sessionUUIDRe mirrors claude's --session-id contract: standard v4
-// UUID, lowercase hex, with the version/variant bits enforced.
-var sessionUUIDRe = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+// sessionUUIDRe accepts Codex session UUIDs. Current Codex uses UUID-like
+// identifiers, including v7 ids, so do not pin a specific version nibble.
+var sessionUUIDRe = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
 // cmdUpdateTask implements `flow update task <ref> [--session-id <uuid>]
 // [--work-dir <path>] [--mkdir]`. At least one field-changing flag must
@@ -40,7 +40,7 @@ func cmdUpdateTask(args []string) int {
 	}
 	ref := args[0]
 	fs := flagSet("update task")
-	sessionID := fs.String("session-id", "", "new Claude session UUID (v4 format)")
+	sessionID := fs.String("session-id", "", "new Codex session UUID")
 	workDir := fs.String("work-dir", "", "new absolute work directory")
 	mkdir := fs.Bool("mkdir", false, "create --work-dir if it does not exist")
 	if err := fs.Parse(args[1:]); err != nil {
@@ -53,7 +53,7 @@ func cmdUpdateTask(args []string) int {
 
 	if *sessionID != "" && !sessionUUIDRe.MatchString(*sessionID) {
 		fmt.Fprintf(os.Stderr,
-			"error: --session-id must be a lowercase v4 UUID (got %q)\n", *sessionID)
+			"error: --session-id must be a lowercase UUID (got %q)\n", *sessionID)
 		return 2
 	}
 

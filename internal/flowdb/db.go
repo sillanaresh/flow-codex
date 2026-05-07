@@ -52,6 +52,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     due_date              TEXT,
     status_changed_at     TEXT,
     session_id            TEXT,
+    transcript_path       TEXT,
     session_started       TEXT,
     session_last_resumed  TEXT,
     created_at            TEXT NOT NULL,
@@ -111,6 +112,7 @@ type Task struct {
 	DueDate            sql.NullString
 	StatusChangedAt    sql.NullString
 	SessionID          sql.NullString
+	TranscriptPath     sql.NullString
 	SessionStarted     sql.NullString
 	SessionLastResumed sql.NullString
 	CreatedAt          string
@@ -238,6 +240,16 @@ func runMigrations(db *sql.DB) error {
 		}
 	}
 
+	has, err = columnExists(db, "tasks", "transcript_path")
+	if err != nil {
+		return err
+	}
+	if !has {
+		if _, err := db.Exec(`ALTER TABLE tasks ADD COLUMN transcript_path TEXT`); err != nil {
+			return fmt.Errorf("add tasks.transcript_path: %w", err)
+		}
+	}
+
 	// Indexes that depend on columns added above. Safe to run after every
 	// migration pass — CREATE INDEX IF NOT EXISTS is idempotent, and by
 	// this point all referenced columns exist.
@@ -319,7 +331,7 @@ func ListProjects(db *sql.DB, filter ProjectFilter) ([]*Project, error) {
 
 // ---------- task queries ----------
 
-const TaskCols = "slug, name, project_slug, status, kind, playbook_slug, priority, work_dir, waiting_on, due_date, status_changed_at, session_id, session_started, session_last_resumed, created_at, updated_at, archived_at"
+const TaskCols = "slug, name, project_slug, status, kind, playbook_slug, priority, work_dir, waiting_on, due_date, status_changed_at, session_id, transcript_path, session_started, session_last_resumed, created_at, updated_at, archived_at"
 
 func ScanTask(row interface{ Scan(dest ...any) error }) (*Task, error) {
 	var t Task
@@ -327,7 +339,8 @@ func ScanTask(row interface{ Scan(dest ...any) error }) (*Task, error) {
 		&t.Slug, &t.Name, &t.ProjectSlug, &t.Status, &t.Kind, &t.PlaybookSlug,
 		&t.Priority, &t.WorkDir,
 		&t.WaitingOn, &t.DueDate, &t.StatusChangedAt, &t.SessionID,
-		&t.SessionStarted, &t.SessionLastResumed, &t.CreatedAt, &t.UpdatedAt, &t.ArchivedAt,
+		&t.TranscriptPath, &t.SessionStarted, &t.SessionLastResumed,
+		&t.CreatedAt, &t.UpdatedAt, &t.ArchivedAt,
 	)
 	if err != nil {
 		return nil, err

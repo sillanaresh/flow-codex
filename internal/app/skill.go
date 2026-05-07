@@ -12,29 +12,29 @@ import (
 //go:embed skill/SKILL.md
 var embeddedSkill []byte
 
-// hookCommand is the exact string written into settings.json under
+// hookCommand is the exact string written into Codex hooks.json under
 // hooks.SessionStart so install/uninstall can idempotently find it.
 // Keep it stable — changing this string would orphan existing
 // installations.
 const hookCommand = "flow hook session-start"
 
 // hookMatcher is the SessionStart matcher string — fires on both
-// fresh startup and `claude --resume`.
+// fresh startup and `codex resume`.
 const hookMatcher = "startup|resume"
 
-// userPromptSubmitHookCommand is the exact string written into
-// settings.json under hooks.UserPromptSubmit. Same stability rule as
+// userPromptSubmitHookCommand is the exact string written into Codex
+// hooks.json under hooks.UserPromptSubmit. Same stability rule as
 // hookCommand: changing this string would orphan existing installs.
 const userPromptSubmitHookCommand = "flow hook user-prompt-submit"
 
 // skillInstallPath returns the absolute path where the skill should be
-// installed on disk: ~/.claude/skills/flow/SKILL.md.
+// installed on disk: ~/.codex/skills/flow/SKILL.md.
 func skillInstallPath() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("no home dir: %w", err)
 	}
-	return filepath.Join(home, ".claude", "skills", "flow", "SKILL.md"), nil
+	return filepath.Join(home, ".codex", "skills", "flow", "SKILL.md"), nil
 }
 
 // skillVersionPath returns the sidecar file that records which binary
@@ -76,13 +76,21 @@ func writeSkillVersion(v string) error {
 	return os.WriteFile(p, []byte(v+"\n"), 0o644)
 }
 
-// userSettingsPath returns ~/.claude/settings.json.
+// userSettingsPath returns Codex's user hooks file path.
 func userSettingsPath() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("no home dir: %w", err)
 	}
-	return filepath.Join(home, ".claude", "settings.json"), nil
+	return filepath.Join(home, ".codex", "hooks.json"), nil
+}
+
+func codexConfigPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("no home dir: %w", err)
+	}
+	return filepath.Join(home, ".codex", "config.toml"), nil
 }
 
 // maybeAutoUpgradeSkill checks the recorded skill version against the
@@ -148,7 +156,7 @@ func cmdSkill(args []string) int {
 func skillInstall(args []string, forceDefault bool) int {
 	fs := flagSet("skill install")
 	force := fs.Bool("force", forceDefault, "overwrite an existing installation")
-	skipHook := fs.Bool("skip-hook", false, "don't auto-install the SessionStart hook in ~/.claude/settings.json")
+	skipHook := fs.Bool("skip-hook", false, "don't auto-install Codex hooks in ~/.codex/hooks.json")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -179,8 +187,14 @@ func skillInstall(args []string, forceDefault bool) int {
 	fmt.Printf("installed flow skill to %s\n", dest)
 
 	if *skipHook {
-		fmt.Println("--skip-hook: leaving ~/.claude/settings.json alone")
+		fmt.Println("--skip-hook: leaving ~/.codex/hooks.json alone")
 		return 0
+	}
+	if added, err := ensureCodexHooksFeature(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not enable Codex hooks feature: %v\n", err)
+	} else if added {
+		config, _ := codexConfigPath()
+		fmt.Printf("enabled Codex hooks in %s\n", config)
 	}
 	if added, err := installSessionStartHook(); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not install SessionStart hook: %v\n", err)
@@ -208,7 +222,7 @@ func skillInstall(args []string, forceDefault bool) int {
 
 func skillUninstall(args []string) int {
 	fs := flagSet("skill uninstall")
-	keepHook := fs.Bool("keep-hook", false, "don't remove the SessionStart hook from ~/.claude/settings.json")
+	keepHook := fs.Bool("keep-hook", false, "don't remove Codex hooks from ~/.codex/hooks.json")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -250,15 +264,15 @@ func skillUninstall(args []string) int {
 }
 
 // installSessionStartHook idempotently adds the flow SessionStart hook
-// to ~/.claude/settings.json. Thin wrapper around installClaudeHook.
+// to Codex hooks.json. Thin wrapper around installCodexHook.
 func installSessionStartHook() (bool, error) {
-	return installClaudeHook("SessionStart", hookMatcher, hookCommand)
+	return installCodexHook("SessionStart", hookMatcher, hookCommand)
 }
 
 // uninstallSessionStartHook removes the flow SessionStart hook entry.
-// Thin wrapper around uninstallClaudeHook.
+// Thin wrapper around uninstallCodexHook.
 func uninstallSessionStartHook() (bool, error) {
-	return uninstallClaudeHook("SessionStart", hookCommand)
+	return uninstallCodexHook("SessionStart", hookCommand)
 }
 
 // installUserPromptSubmitHook idempotently adds the flow
@@ -267,26 +281,80 @@ func uninstallSessionStartHook() (bool, error) {
 // or no-op (FLOW_TASK set).
 func installUserPromptSubmitHook() (bool, error) {
 	// UserPromptSubmit doesn't take a matcher.
-	return installClaudeHook("UserPromptSubmit", "", userPromptSubmitHookCommand)
+	return installCodexHook("UserPromptSubmit", "", userPromptSubmitHookCommand)
 }
 
 // uninstallUserPromptSubmitHook removes the flow UserPromptSubmit hook
-// entry. Thin wrapper around uninstallClaudeHook.
+// entry. Thin wrapper around uninstallCodexHook.
 func uninstallUserPromptSubmitHook() (bool, error) {
-	return uninstallClaudeHook("UserPromptSubmit", userPromptSubmitHookCommand)
+	return uninstallCodexHook("UserPromptSubmit", userPromptSubmitHookCommand)
 }
 
-// installClaudeHook idempotently adds a hook entry for the given
-// Claude Code event to ~/.claude/settings.json. matcher may be empty —
+func ensureCodexHooksFeature() (bool, error) {
+	path, err := codexConfigPath()
+	if err != nil {
+		return false, err
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return false, fmt.Errorf("read %s: %w", path, err)
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return false, fmt.Errorf("mkdir %s: %w", filepath.Dir(path), err)
+		}
+		raw = nil
+	}
+	text := string(raw)
+	lines := strings.Split(text, "\n")
+	for i, line := range lines {
+		trim := strings.TrimSpace(line)
+		if strings.HasPrefix(trim, "codex_hooks") {
+			if strings.Contains(trim, "true") {
+				return false, nil
+			}
+			lines[i] = "codex_hooks = true"
+			return writeCodexConfig(path, lines)
+		}
+	}
+	for i, line := range lines {
+		if strings.TrimSpace(line) == "[features]" {
+			lines = append(lines[:i+1], append([]string{"codex_hooks = true"}, lines[i+1:]...)...)
+			return writeCodexConfig(path, lines)
+		}
+	}
+	if strings.TrimSpace(text) != "" && !strings.HasSuffix(text, "\n") {
+		text += "\n"
+	}
+	text += "\n[features]\ncodex_hooks = true\n"
+	if err := os.WriteFile(path, []byte(text), 0o644); err != nil {
+		return false, fmt.Errorf("write %s: %w", path, err)
+	}
+	return true, nil
+}
+
+func writeCodexConfig(path string, lines []string) (bool, error) {
+	out := strings.Join(lines, "\n")
+	if !strings.HasSuffix(out, "\n") {
+		out += "\n"
+	}
+	if err := os.WriteFile(path, []byte(out), 0o644); err != nil {
+		return false, fmt.Errorf("write %s: %w", path, err)
+	}
+	return true, nil
+}
+
+// installCodexHook idempotently adds a hook entry for the given
+// Codex event to ~/.codex/hooks.json. matcher may be empty —
 // some events (UserPromptSubmit, Notification) don't use a matcher and
 // the field is omitted from the entry. command is both the literal
-// command Claude Code will execute AND the marker we look for to decide
+// command Codex will execute AND the marker we look for to decide
 // whether the hook is already installed.
 //
 // Returns (added, err) where added is true iff the file was modified.
 // The merge preserves all existing top-level keys, all hooks under
 // other events, and all existing entries under the same event.
-func installClaudeHook(event, matcher, command string) (bool, error) {
+func installCodexHook(event, matcher, command string) (bool, error) {
 	path, err := userSettingsPath()
 	if err != nil {
 		return false, err
@@ -358,10 +426,10 @@ func installClaudeHook(event, matcher, command string) (bool, error) {
 	return true, nil
 }
 
-// uninstallClaudeHook removes any entry under hooks.<event> whose
+// uninstallCodexHook removes any entry under hooks.<event> whose
 // inner hook list contains a command matching the given marker.
 // Returns (removed, err) where removed is true iff the file changed.
-func uninstallClaudeHook(event, command string) (bool, error) {
+func uninstallCodexHook(event, command string) (bool, error) {
 	path, err := userSettingsPath()
 	if err != nil {
 		return false, err

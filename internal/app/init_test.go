@@ -9,7 +9,7 @@ import (
 
 // initTempFlowRoot points FLOW_ROOT at a tempdir AND redirects $HOME so
 // skill install lands inside the tempdir as well. Isolates every init test
-// from the real ~/.flow/ and ~/.claude/skills/. Named with an `init` prefix
+// from the real ~/.flow/ and ~/.codex/skills/. Named with an `init` prefix
 // to avoid colliding with withTempFlowRoot defined in cmd_show_test.go
 // (which has a different signature because it returns (root, db)).
 func initTempFlowRoot(t *testing.T) string {
@@ -87,7 +87,7 @@ func TestCmdInitInstallsSkill(t *testing.T) {
 	if rc := cmdInit(nil); rc != 0 {
 		t.Fatalf("cmdInit rc=%d", rc)
 	}
-	skillPath := filepath.Join(os.Getenv("HOME"), ".claude", "skills", "flow", "SKILL.md")
+	skillPath := filepath.Join(os.Getenv("HOME"), ".codex", "skills", "flow", "SKILL.md")
 	info, err := os.Stat(skillPath)
 	if err != nil {
 		t.Fatalf("SKILL.md missing: %v", err)
@@ -100,7 +100,7 @@ func TestCmdInitInstallsSkill(t *testing.T) {
 func TestCmdInitSkipsSkillIfAlreadyPresent(t *testing.T) {
 	initTempFlowRoot(t)
 	home := os.Getenv("HOME")
-	skillPath := filepath.Join(home, ".claude", "skills", "flow", "SKILL.md")
+	skillPath := filepath.Join(home, ".codex", "skills", "flow", "SKILL.md")
 	if err := os.MkdirAll(filepath.Dir(skillPath), 0o755); err != nil {
 		t.Fatal(err)
 	}

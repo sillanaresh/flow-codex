@@ -8,26 +8,37 @@ import (
 	"os/exec"
 )
 
-// claudeRunner invokes the headless `claude -p` CLI for the post-done
+// codexRunner invokes the headless `codex exec` CLI for the post-done
 // close-out sweep. Tests override this var to capture invocations
-// without spawning claude. Stdout/stderr are discarded — the sweep
-// prompt instructs claude to write KB entries and (when applicable) a
+// without spawning codex. Stdout/stderr are discarded — the sweep
+// prompt instructs Codex to write KB entries and (when applicable) a
 // project update silently and produce no chat output.
-var claudeRunner = func(slug, prompt string) error {
-	cmd := exec.Command("claude", "-p", prompt, "--dangerously-skip-permissions")
-	cmd.Env = append(os.Environ(), "FLOW_TASK="+slug)
+var codexRunner = func(task *flowdb.Task, projectSlug, prompt string) error {
+	args := []string{
+		"exec",
+		"--dangerously-bypass-approvals-and-sandbox",
+		"--skip-git-repo-check",
+		"-C", task.WorkDir,
+		prompt,
+	}
+	cmd := exec.Command("codex", args...)
+	env := append(os.Environ(), "FLOW_TASK="+task.Slug)
+	if projectSlug != "" {
+		env = append(env, "FLOW_PROJECT="+projectSlug)
+	}
+	cmd.Env = env
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
 	return cmd.Run()
 }
 
 // cmdDone marks a task done. Per spec §5.3 this is a single UPDATE that
-// does NOT touch the iTerm tab, kill the Claude session, or clear
+// does NOT touch the iTerm tab, kill the Codex session, or clear
 // session_id — the session can still be resumed via `flow do` after
 // manually reopening the task if the user ever needs to.
 //
 // After the status flip, if the task has a session_id, done synchronously
-// spawns a single headless `claude -p` session that loads the flow skill,
+// spawns a single headless `codex exec` session that loads the flow skill,
 // reads the task's transcript, and runs a two-part close-out sweep:
 //  1. KB scoop per §4.10 → ~/.flow/kb/*.md.
 //  2. If the task is attached to a project, optionally write one
@@ -38,7 +49,7 @@ var claudeRunner = func(slug, prompt string) error {
 //     purely-mechanical sessions yield no file.
 //
 // The CLI prints "updating kbs, project updates..." while it waits.
-// A failed sweep (missing claude binary, non-zero exit) only emits a
+// A failed sweep (missing codex binary, non-zero exit) only emits a
 // warning — the status flip is the contract; the sweep is best-effort.
 func cmdDone(args []string) int {
 	if len(args) == 0 {
@@ -89,7 +100,7 @@ func cmdDone(args []string) int {
 		if task.ProjectSlug.Valid {
 			projectSlug = task.ProjectSlug.String
 		}
-		if err := claudeRunner(task.Slug, buildCloseoutSweepPrompt(task.Slug, projectSlug)); err != nil {
+		if err := codexRunner(task, projectSlug, buildCloseoutSweepPrompt(task.Slug, projectSlug)); err != nil {
 			fmt.Println()
 			fmt.Fprintf(os.Stderr, "warning: close-out sweep failed: %v\n", err)
 		} else {
@@ -101,7 +112,7 @@ func cmdDone(args []string) int {
 
 // buildCloseoutSweepPrompt composes the headless prompt that drives
 // the post-done close-out sweep. The prompt is passed as a single
-// positional arg to `claude -p` via exec.Command — no shell
+// positional arg to `codex exec` via exec.Command — no shell
 // interpolation, so any characters are safe.
 //
 // Two responsibilities, executed in order by the same headless session:
@@ -120,9 +131,9 @@ func cmdDone(args []string) int {
 func buildCloseoutSweepPrompt(slug, projectSlug string) string {
 	header := fmt.Sprintf(
 		"You are running an automated close-out sweep for completed flow task %q. Do this:\n\n"+
-			"1. Invoke the flow skill via the Skill tool. This loads §4.10 (the scoop-mode KB rules) and §4.5 (update-file shape) which you must follow exactly.\n\n"+
+			"1. Invoke the `flow` skill. This loads §4.10 (the scoop-mode KB rules) and §4.5 (update-file shape) which you must follow exactly.\n\n"+
 			"2. Run: flow transcript %s\n"+
-			"   This prints the conversation transcript from the task's Claude session. Read it carefully.\n\n"+
+			"   This prints the conversation transcript from the task's Codex session. Read it carefully.\n\n"+
 			"3. KB sweep. For each of these five files, decide whether the transcript revealed any durable facts that belong there per §4.10's bucket table:\n"+
 			"   - ~/.flow/kb/user.md\n"+
 			"   - ~/.flow/kb/org.md\n"+

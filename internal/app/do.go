@@ -43,9 +43,8 @@ func openConcurrentDB(path string) (*sql.DB, error) {
 	return db, nil
 }
 
-// cmdDo flips a task to in-progress, bootstraps a Claude session if
-// needed (race-free via atomic UPDATE ... WHERE session_id IS ?), and
-// spawns an iTerm tab to resume it. See spec §6 for the full protocol.
+// cmdDo flips a task to in-progress, starts a Codex session if needed,
+// and spawns a terminal tab to run or resume it.
 func cmdDo(args []string) int {
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "error: do requires a task ref")
@@ -54,14 +53,9 @@ func cmdDo(args []string) int {
 	query := args[0]
 	fs := flagSet("do")
 	fresh := fs.Bool("fresh", false, "discard existing session and re-bootstrap")
-	dangerSkip := fs.Bool("dangerously-skip-permissions", false, "pass --dangerously-skip-permissions through to claude")
+	dangerSkip := fs.Bool("dangerously-skip-permissions", false, "pass Codex's dangerous bypass flag through to codex")
 	if err := fs.Parse(args[1:]); err != nil {
 		return 2
-	}
-
-	var extraClaudeArgs []string
-	if *dangerSkip {
-		extraClaudeArgs = append(extraClaudeArgs, "--dangerously-skip-permissions")
 	}
 
 	dbPath, err := flowDBPath()
@@ -112,36 +106,23 @@ func cmdDo(args []string) int {
 	}
 
 	// Decide bootstrap vs resume based on the row we re-read inside the tx.
-	// Fresh bootstrap means: either the task has no session_id, or --fresh
-	// was passed. In both cases we allocate a new UUID here and claim it
-	// in the DB via the status-flip UPDATE below — so the jsonl file claude
-	// writes is identified deterministically by us, not scraped afterwards.
+	// Codex generates the session id at startup. The Codex SessionStart hook
+	// receives that id and transcript path, then registers them back here.
 	var curSessionID sql.NullString
 	if err := tx.QueryRow(`SELECT session_id FROM tasks WHERE slug=?`, task.Slug).Scan(&curSessionID); err != nil {
 		fmt.Fprintf(os.Stderr, "error: re-read session_id: %v\n", err)
 		return 1
 	}
 	needsBootstrap := !curSessionID.Valid || *fresh
-	var sessionID string
-	if needsBootstrap {
-		id, err := newUUID()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: allocate session id: %v\n", err)
-			return 1
-		}
-		sessionID = id
-	} else {
-		sessionID = curSessionID.String
-	}
 
 	now := flowdb.NowISO()
 	if needsBootstrap {
 		if _, err := tx.Exec(
 			`UPDATE tasks SET status='in-progress',
 			 status_changed_at = CASE WHEN status != 'in-progress' THEN ? ELSE status_changed_at END,
-			 session_id=?, session_started=?, updated_at=?
+			 updated_at=?
 			 WHERE slug=? AND status IN ('backlog','in-progress')`,
-			now, sessionID, now, now, task.Slug,
+			now, now, task.Slug,
 		); err != nil {
 			fmt.Fprintf(os.Stderr, "error: flip status: %v\n", err)
 			return 1
@@ -193,19 +174,9 @@ func cmdDo(args []string) int {
 		return 1
 	}
 
-	// Spawn the iTerm tab.
-	//
-	// We shell out to `claude` directly (no wrapper). The skill on disk at
-	// ~/.claude/skills/flow/SKILL.md is whatever was last installed via
-	// `flow skill install` / `flow skill update`. To refresh it after
-	// upgrading flow, the user runs `flow skill update` manually.
+	// Spawn the terminal tab.
 	var command string
 	if needsBootstrap {
-		// Fresh bootstrap path: we pre-allocated the session UUID above
-		// and committed it to the DB. Passing --session-id to claude
-		// makes it write its jsonl at the deterministic path
-		// ~/.claude/projects/<encoded-cwd>/<sessionID>.jsonl, so there is
-		// nothing to discover afterwards.
 		playbookSlug := ""
 		isFirstRun := false
 		if task.PlaybookSlug.Valid {
@@ -223,41 +194,23 @@ func cmdDo(args []string) int {
 			isFirstRun = runCount <= 1
 		}
 		prompt := buildBootstrapPromptForKindV2(task.Slug, task.Kind, playbookSlug, isFirstRun)
-		command = fmt.Sprintf("claude --session-id %s %s", sessionID, spawner.ShellQuote(prompt))
+		if *dangerSkip {
+			command = "codex --dangerously-bypass-approvals-and-sandbox " + spawner.ShellQuote(prompt)
+		} else {
+			command = "codex " + spawner.ShellQuote(prompt)
+		}
 	} else {
-		// Resume path: the UUID we already have in the DB is what claude
-		// used to write its existing jsonl.
-		command = "claude --resume " + sessionID
-	}
-	if *dangerSkip {
-		command += " --dangerously-skip-permissions"
+		if *dangerSkip {
+			command = "codex resume --dangerously-bypass-approvals-and-sandbox " + curSessionID.String
+		} else {
+			command = "codex resume " + curSessionID.String
+		}
 	}
 	envVars := map[string]string{"FLOW_TASK": task.Slug}
 	if project != nil {
 		envVars["FLOW_PROJECT"] = project.Slug
 	}
 	if err := spawner.SpawnTab(buildTabTitle(project, task), cwd, command, envVars); err != nil {
-		if needsBootstrap {
-			// Spawn failed before claude could write its jsonl. Undo
-			// the session_id pre-allocation so the next `flow do`
-			// retries bootstrap fresh; otherwise the DB has a
-			// session_id with no backing jsonl and every subsequent
-			// `flow do` runs `claude --resume <uuid>` which fails
-			// with "No conversation found" indefinitely. The status
-			// flip is preserved: the task is genuinely in-progress
-			// even when spawn fails, and the user's next attempt
-			// should resume that intent.
-			//
-			// The WHERE clause guards against a concurrent `flow do`
-			// having mutated session_id between commit and now —
-			// only nil it out if it's still the UUID we allocated.
-			if _, undoErr := db.Exec(
-				`UPDATE tasks SET session_id=NULL, session_started=NULL WHERE slug=? AND session_id=?`,
-				task.Slug, sessionID,
-			); undoErr != nil {
-				fmt.Fprintf(os.Stderr, "warning: rollback pre-allocated session after spawn failure: %v\n", undoErr)
-			}
-		}
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		return 1
 	}
@@ -281,9 +234,9 @@ func cmdDo(args []string) int {
 	}
 
 	if needsBootstrap {
-		fmt.Printf("Spawned %s (session %s)\n", task.Slug, sessionID)
+		fmt.Printf("Spawned %s (Codex will register its session id on startup)\n", task.Slug)
 	} else {
-		fmt.Printf("Resumed %s (session %s)\n", task.Slug, sessionID)
+		fmt.Printf("Resumed %s (session %s)\n", task.Slug, curSessionID.String)
 	}
 	return 0
 }
@@ -293,16 +246,10 @@ func cmdDo(args []string) int {
 // used; otherwise the regular task variant. Empty kind (legacy rows
 // that somehow didn't migrate) falls through to the regular variant.
 //
-// The bootstrap prompt is intentionally shell-safe — no single/double
-// quotes, backticks, or dollar signs — because it gets shell-quoted
-// as a single positional argument to `claude`.
-//
-// The session's UUID is pre-allocated by `flow do` and passed via
-// `claude --session-id <uuid>`, so there is no self-registration step
-// here. The session loads context in order: task brief + task updates,
-// then (if any) project brief + project updates, then CLAUDE.md files
-// in the work_dir. The flow skill enforces this sequence too; the
-// bootstrap prompt is a backup in case the skill isn't auto-activated.
+// The bootstrap prompt gets shell-quoted as a single positional argument to
+// `codex`. Codex's SessionStart hook registers the generated session id.
+// The session loads context in order: task brief + task updates, then
+// (if any) project brief + project updates, then AGENTS.md guidance.
 // Kept for callers (and tests) that don't track first-run state. New
 // callers should use buildBootstrapPromptForKindV2 to opt into the
 // first-run variant when relevant.
@@ -326,10 +273,10 @@ func buildBootstrapPromptForKindV2(slug, kind, playbookSlug string, isFirstRun b
 func buildTaskBootstrapPrompt(slug string) string {
 	return fmt.Sprintf(
 		"You are the execution session for flow task %s. Do ALL of the following in order before touching code:\n"+
-			"1. Invoke the flow skill via the Skill tool. This loads the operating manual that governs how this session works: workflows, bootstrap contract, KB discipline, and scope-creep detection.\n"+
+			"1. Invoke the `flow` skill. This loads the operating manual that governs how this session works: workflows, bootstrap contract, KB discipline, and scope-creep detection.\n"+
 			"2. Run: flow show task. Read the file at the brief: path AND every file listed under updates:. Files listed under other: are sidecar references — load on demand when relevant, not eagerly.\n"+
 			"3. If a project is listed on the task, run: flow show project <that-project-slug>. Read its brief AND every file under updates:. Files under other: are on-demand references.\n"+
-			"4. Read CLAUDE.md in your work_dir and any nested CLAUDE.md files under subdirectories you will modify. These override any assumption from the brief.\n"+
+			"4. Read AGENTS.md guidance already loaded by Codex, plus any nested AGENTS.md files under subdirectories you will modify. These override any assumption from the brief.\n"+
 			"5. Only then begin work. If any brief section is blank or unclear, ASK — do not infer.",
 		slug,
 	)
@@ -343,11 +290,11 @@ func buildTaskBootstrapPrompt(slug string) string {
 func buildPlaybookRunBootstrapPrompt(runSlug, playbookSlug string, isFirstRun bool) string {
 	base := fmt.Sprintf(
 		"You are running playbook `%s` as run `%s`. Do ALL of the following in order before executing anything:\n"+
-			"1. Invoke the flow skill via the Skill tool. This loads the operating manual that governs how this session works.\n"+
+			"1. Invoke the `flow` skill. This loads the operating manual that governs how this session works.\n"+
 			"2. Run: flow show playbook %s. This shows the playbook's definition and recent runs — context only, not your instructions. Note any files listed under other: — they're sidecar references you can Read on demand if relevant; do not eagerly load them.\n"+
 			"3. Run: flow show task. Read the file at the brief: path AND every file listed under updates:. Files under other: are references for THIS run; load on demand when relevant. The brief is your authoritative instructions for this run — it was snapshotted from the playbook at the moment this run started. Execute against this, not the live playbook brief.\n"+
 			"4. If a project is listed on the task, run: flow show project <that-project-slug>. Read its brief and every file under updates:. Files under other: are on-demand references.\n"+
-			"5. Read CLAUDE.md in your work_dir.\n"+
+			"5. Read AGENTS.md guidance already loaded by Codex, plus any nested AGENTS.md files under subdirectories you will modify.\n"+
 			"6. Only then begin executing your brief.\n"+
 			"\n"+
 			"While executing: if the user adjusts the playbook's procedure during this run (e.g. 'let's always do X', 'change the approach for...', 'this step should also...'), pause and ask via AskUserQuestion whether to persist the change to the playbook's live brief.md so future runs benefit. Options: 'Persist to playbook' (Edit playbooks/%s/brief.md), 'Just this run' (no change to live playbook), 'Both — persist + log a note in playbooks/%s/updates/'. The run's own brief.md is a frozen snapshot — never edit it to change future behavior; that's what the live playbook brief is for. See flow skill §4.13 for the full pattern.",

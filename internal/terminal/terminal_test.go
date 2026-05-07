@@ -26,7 +26,7 @@ func TestSpawnTabScriptShape(t *testing.T) {
 		"FLOW_TASK":    "my-task",
 		"FLOW_PROJECT": "flow",
 	}
-	if err := SpawnTab("flow/my-task", "/Users/me/repo", "claude --resume abc", envVars); err != nil {
+	if err := SpawnTab("flow/my-task", "/Users/me/repo", "codex resume abc", envVars); err != nil {
 		t.Fatalf("SpawnTab: %v", err)
 	}
 
@@ -39,7 +39,7 @@ func TestSpawnTabScriptShape(t *testing.T) {
 		`keystroke "t" using {command down}`,
 		`set custom title of newTab to "flow/my-task"`,
 		// env vars assigned alphabetically, before the command, all on one line:
-		`FLOW_PROJECT='flow' FLOW_TASK='my-task' claude --resume abc`,
+		`FLOW_PROJECT='flow' FLOW_TASK='my-task' codex resume abc`,
 		// cd is the first thing in the typed line, single-leading-space
 		// for histignorespace:
 		` cd '/Users/me/repo' && `,
@@ -79,7 +79,7 @@ func TestSpawnTabNoEnvVars(t *testing.T) {
 // TestSpawnTabWrapsAccessibilityError verifies that when osascript
 // fails with a macOS Accessibility-denied error pattern, SpawnTab
 // returns a wrapped error explaining what's missing and how to fix
-// it. The Claude session that called `flow do` relies on this
+// it. The Codex session that called `flow do` relies on this
 // message verbatim to walk the user through System Settings.
 func TestSpawnTabWrapsAccessibilityError(t *testing.T) {
 	cases := []struct{ name, stderr string }{
@@ -104,7 +104,7 @@ func TestSpawnTabWrapsAccessibilityError(t *testing.T) {
 				"macOS Accessibility permission for Terminal",
 				`"Terminal"`,
 				"x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
-				"NOT Claude Code",
+				"NOT Codex",
 				"NOT the flow binary",
 				"flow do",
 				tc.stderr, // underlying error preserved via %w

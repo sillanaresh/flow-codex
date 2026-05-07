@@ -58,6 +58,18 @@ func expectedCommand(event string) string {
 	return ""
 }
 
+func testSkillPath(home string) string {
+	return filepath.Join(home, ".codex", "skills", "flow", "SKILL.md")
+}
+
+func testSkillDir(home string) string {
+	return filepath.Join(home, ".codex", "skills", "flow")
+}
+
+func testHooksPath(home string) string {
+	return filepath.Join(home, ".codex", "hooks.json")
+}
+
 // withTempHome redirects $HOME to a tempdir for the duration of the test.
 func withTempHome(t *testing.T) string {
 	t.Helper()
@@ -75,7 +87,7 @@ func TestSkillInstallWritesFile(t *testing.T) {
 	if rc != 0 {
 		t.Fatalf("install rc=%d", rc)
 	}
-	path := filepath.Join(home, ".claude", "skills", "flow", "SKILL.md")
+	path := testSkillPath(home)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read: %v", err)
@@ -100,7 +112,7 @@ func TestSkillInstallErrorsOnExisting(t *testing.T) {
 
 func TestSkillInstallForceOverwrites(t *testing.T) {
 	home := withTempHome(t)
-	path := filepath.Join(home, ".claude", "skills", "flow", "SKILL.md")
+	path := testSkillPath(home)
 
 	// Pre-create something different.
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -138,7 +150,7 @@ func TestSkillUninstallRemovesDir(t *testing.T) {
 	if rc := cmdSkill([]string{"install"}); rc != 0 {
 		t.Fatalf("install rc=%d", rc)
 	}
-	dir := filepath.Join(home, ".claude", "skills", "flow")
+	dir := testSkillDir(home)
 	if _, err := os.Stat(dir); err != nil {
 		t.Fatalf("skill dir missing after install: %v", err)
 	}
@@ -160,16 +172,16 @@ func TestSkillUninstallIdempotent(t *testing.T) {
 
 // TestSkillInstallWritesBothHooks verifies install wires up BOTH the
 // SessionStart hook (existing behavior) and the new UserPromptSubmit
-// hook into ~/.claude/settings.json.
+// hook into ~/.codex/hooks.json.
 func TestSkillInstallWritesBothHooks(t *testing.T) {
 	home := withTempHome(t)
 	if rc := cmdSkill([]string{"install"}); rc != 0 {
 		t.Fatalf("install rc=%d", rc)
 	}
-	settings := readSettings(t, filepath.Join(home, ".claude", "settings.json"))
+	settings := readSettings(t, testHooksPath(home))
 	hooks, _ := settings["hooks"].(map[string]any)
 	if hooks == nil {
-		t.Fatal("settings.json has no hooks key")
+		t.Fatal("hooks.json has no hooks key")
 	}
 	if !hookEventReferencesCommand(hooks, "SessionStart", "flow hook session-start") {
 		t.Errorf("SessionStart hook missing or wrong command: %#v", hooks["SessionStart"])
@@ -190,7 +202,7 @@ func TestSkillInstallIsIdempotent(t *testing.T) {
 	if rc := cmdSkill([]string{"install", "--force"}); rc != 0 {
 		t.Fatalf("second install --force rc=%d", rc)
 	}
-	settings := readSettings(t, filepath.Join(home, ".claude", "settings.json"))
+	settings := readSettings(t, testHooksPath(home))
 	hooks, _ := settings["hooks"].(map[string]any)
 	for _, event := range []string{"SessionStart", "UserPromptSubmit"} {
 		entries, _ := hooks[event].([]any)
@@ -210,21 +222,21 @@ func TestSkillUninstallRemovesBothHooks(t *testing.T) {
 	if rc := cmdSkill([]string{"uninstall"}); rc != 0 {
 		t.Fatalf("uninstall rc=%d", rc)
 	}
-	settings := readSettings(t, filepath.Join(home, ".claude", "settings.json"))
+	settings := readSettings(t, testHooksPath(home))
 	hooks, _ := settings["hooks"].(map[string]any)
 	if hooks != nil && len(hooks) != 0 {
 		t.Errorf("expected hooks map empty or absent after uninstall, got %#v", hooks)
 	}
 }
 
-// TestSkillInstallSkipHook leaves settings.json untouched when --skip-hook.
+// TestSkillInstallSkipHook leaves hooks.json untouched when --skip-hook.
 func TestSkillInstallSkipHook(t *testing.T) {
 	home := withTempHome(t)
 	if rc := cmdSkill([]string{"install", "--skip-hook"}); rc != 0 {
 		t.Fatalf("install --skip-hook rc=%d", rc)
 	}
-	if _, err := os.Stat(filepath.Join(home, ".claude", "settings.json")); !os.IsNotExist(err) {
-		t.Errorf("--skip-hook should not create settings.json; stat err=%v", err)
+	if _, err := os.Stat(testHooksPath(home)); !os.IsNotExist(err) {
+		t.Errorf("--skip-hook should not create hooks.json; stat err=%v", err)
 	}
 }
 
@@ -316,17 +328,25 @@ func TestSkillIntakeMinimal(t *testing.T) {
 	}
 }
 
-func TestSkillUsesAskUserQuestionConsistently(t *testing.T) {
+func TestSkillUsesStructuredChoicesConsistently(t *testing.T) {
 	got := string(embeddedSkill)
-	// The skill should have many AskUserQuestion references — at least one
-	// per major workflow that involves user choice.
+	// The skill still carries many legacy AskUserQuestion references in
+	// individual workflows, but §4a must define the Codex-safe fallback:
+	// use an interactive choice tool when present, otherwise ask a compact
+	// numbered-choice question.
 	count := strings.Count(got, "AskUserQuestion")
 	if count < 40 {
 		t.Errorf("expected at least 40 AskUserQuestion references in skill, got %d", count)
 	}
 	// §4a should set the policy explicitly.
-	if !strings.Contains(got, "always AskUserQuestion") {
-		t.Errorf("skill §4a should establish 'always AskUserQuestion' as the rule")
+	for _, want := range []string{
+		"has an interactive choice tool available",
+		"compact numbered-choice question",
+		"structured-choice",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("skill §4a missing structured choice policy: %q", want)
+		}
 	}
 }
 
@@ -351,7 +371,7 @@ func TestSkillHasMidInterviewDriftRule(t *testing.T) {
 	for _, want := range []string{
 		"Mid-interview drift",
 		"sub-question has 2–4 discrete options",
-		"Don't keep typing prose just because you started",
+		"Don't keep typing vague prose just because you started",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("skill missing mid-interview-drift content %q", want)
@@ -386,7 +406,7 @@ func TestSkillHasUpgradeWorkflow(t *testing.T) {
 // as the load-bearing moment that persists the session's learnings —
 // it triggers the close-out sweep that writes KB + project update.
 // Without this content the skill treats closure as bookkeeping and
-// Claude never proactively offers to close, which means the user's
+// Codex never proactively offers to close, which means the user's
 // learnings stay locked in the transcript.
 func TestSkillEmphasizesCloseOutValue(t *testing.T) {
 	got := string(embeddedSkill)
@@ -413,7 +433,7 @@ func TestSkillEmphasizesCloseOutValue(t *testing.T) {
 
 // TestSkillHasAccessibilityErrorRecipe pins the §4.4 recipe for
 // handling the macOS Accessibility error from the Terminal.app
-// backend: name Terminal definitively (not Claude/flow), open the
+// backend: name Terminal definitively (not Codex/flow), open the
 // right Settings pane via the deep-link URL, and retry only after
 // explicit user confirmation.
 func TestSkillHasAccessibilityErrorRecipe(t *testing.T) {
@@ -421,7 +441,7 @@ func TestSkillHasAccessibilityErrorRecipe(t *testing.T) {
 	for _, want := range []string{
 		"macOS Accessibility error from the Terminal.app backend",
 		"Trust the error verbatim",
-		"NOT Claude Code",
+		"NOT Codex",
 		"NOT the flow binary",
 		"x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
 		"there is no CLI to",
@@ -454,7 +474,7 @@ func TestSkillHasExplicitInvocationSection(t *testing.T) {
 // TestSkillNoCliCoachingInUserFacingLabels pins the rule that the
 // skill must not put literal `flow ...` invocations inside
 // AskUserQuestion option labels or chat replies. Users should never
-// see CLI commands; Claude uses flow under the hood.
+// see CLI commands; Codex uses flow under the hood.
 //
 // We pin two specific past offenders that motivated the sweep — the
 // "Run init?" prompt that read "Yes, run flow init", and the

@@ -6,29 +6,30 @@ import (
 	"testing"
 )
 
-// stubClaudeRunner replaces claudeRunner with a capturing stub that returns
+// stubCodexRunner replaces codexRunner with a capturing stub that returns
 // the supplied error. Returns a *call counter and a *captured-args record so
 // tests can assert how the runner was invoked.
-type capturedClaudeCall struct {
-	slug   string
-	prompt string
+type capturedCodexCall struct {
+	slug        string
+	projectSlug string
+	prompt      string
 }
 
-func stubClaudeRunner(t *testing.T, retErr error) *[]capturedClaudeCall {
+func stubCodexRunner(t *testing.T, retErr error) *[]capturedCodexCall {
 	t.Helper()
-	old := claudeRunner
-	calls := &[]capturedClaudeCall{}
-	claudeRunner = func(slug, prompt string) error {
-		*calls = append(*calls, capturedClaudeCall{slug: slug, prompt: prompt})
+	old := codexRunner
+	calls := &[]capturedCodexCall{}
+	codexRunner = func(task *flowdb.Task, projectSlug, prompt string) error {
+		*calls = append(*calls, capturedCodexCall{slug: task.Slug, projectSlug: projectSlug, prompt: prompt})
 		return retErr
 	}
-	t.Cleanup(func() { claudeRunner = old })
+	t.Cleanup(func() { codexRunner = old })
 	return calls
 }
 
 func TestCmdDoneHappyPath(t *testing.T) {
 	setupFlowRoot(t)
-	stubClaudeRunner(t, nil) // no session, won't fire — but safe
+	stubCodexRunner(t, nil) // no session, won't fire — but safe
 	if rc := cmdAdd([]string{"task", "Some Task"}); rc != 0 {
 		t.Fatalf("add rc=%d", rc)
 	}
@@ -47,7 +48,7 @@ func TestCmdDoneHappyPath(t *testing.T) {
 
 func TestCmdDoneUnknownRef(t *testing.T) {
 	setupFlowRoot(t)
-	stubClaudeRunner(t, nil)
+	stubCodexRunner(t, nil)
 	if rc := cmdDone([]string{"nope"}); rc == 0 {
 		t.Error("expected rc!=0 for unknown task")
 	}
@@ -55,7 +56,7 @@ func TestCmdDoneUnknownRef(t *testing.T) {
 
 func TestCmdDoneIdempotent(t *testing.T) {
 	setupFlowRoot(t)
-	stubClaudeRunner(t, nil)
+	stubCodexRunner(t, nil)
 	if rc := cmdAdd([]string{"task", "Idem"}); rc != 0 {
 		t.Fatalf("add rc=%d", rc)
 	}
@@ -83,7 +84,7 @@ func TestCmdDoneNoArgs(t *testing.T) {
 // immediately; the runner is never called.
 func TestCmdDoneSkipsSweepWhenNoSession(t *testing.T) {
 	setupFlowRoot(t)
-	calls := stubClaudeRunner(t, errors.New("should not be called"))
+	calls := stubCodexRunner(t, errors.New("should not be called"))
 	if rc := cmdAdd([]string{"task", "No Session Task"}); rc != 0 {
 		t.Fatalf("add rc=%d", rc)
 	}
@@ -96,11 +97,11 @@ func TestCmdDoneSkipsSweepWhenNoSession(t *testing.T) {
 }
 
 // TestCmdDoneRunsSweepWhenSessionExists verifies that done invokes the
-// claude runner exactly once with the task slug and a sweep prompt
+// codex runner exactly once with the task slug and a sweep prompt
 // when the task has a session_id, and returns rc=0 on success.
 func TestCmdDoneRunsSweepWhenSessionExists(t *testing.T) {
 	setupFlowRoot(t)
-	calls := stubClaudeRunner(t, nil)
+	calls := stubCodexRunner(t, nil)
 	if rc := cmdAdd([]string{"task", "Has Session"}); rc != 0 {
 		t.Fatalf("add rc=%d", rc)
 	}
@@ -130,7 +131,7 @@ func TestCmdDoneRunsSweepWhenSessionExists(t *testing.T) {
 	// Sanity-check the prompt mentions key behavior so a regression in
 	// buildCloseoutSweepPrompt that drops the skill load or the
 	// transcript step gets caught here.
-	for _, want := range []string{"flow skill", "flow transcript has-session", "kb/"} {
+	for _, want := range []string{"`flow` skill", "flow transcript has-session", "kb/"} {
 		if !contains(got.prompt, want) {
 			t.Errorf("prompt missing %q", want)
 		}
@@ -142,7 +143,7 @@ func TestCmdDoneRunsSweepWhenSessionExists(t *testing.T) {
 // project-update step pointing at the project's updates/ directory.
 func TestCmdDoneCloseoutSweepIncludesProjectStep(t *testing.T) {
 	setupFlowRoot(t)
-	calls := stubClaudeRunner(t, nil)
+	calls := stubCodexRunner(t, nil)
 
 	wd := t.TempDir()
 	if rc := cmdAdd([]string{"project", "Some Proj", "--slug", "sp", "--work-dir", wd}); rc != 0 {
@@ -184,7 +185,7 @@ func TestCmdDoneCloseoutSweepIncludesProjectStep(t *testing.T) {
 // instructions or path references.
 func TestCmdDoneCloseoutSweepSkipsProjectStepForFloating(t *testing.T) {
 	setupFlowRoot(t)
-	calls := stubClaudeRunner(t, nil)
+	calls := stubCodexRunner(t, nil)
 
 	if rc := cmdAdd([]string{"task", "Floating"}); rc != 0 {
 		t.Fatalf("add task rc=%d", rc)
@@ -220,7 +221,7 @@ func TestCmdDoneCloseoutSweepSkipsProjectStepForFloating(t *testing.T) {
 // flip is the durability boundary, the sweep is best-effort.
 func TestCmdDoneSweepFailureStillSucceeds(t *testing.T) {
 	setupFlowRoot(t)
-	stubClaudeRunner(t, errors.New("exec: claude: executable file not found in $PATH"))
+	stubCodexRunner(t, errors.New("exec: codex: executable file not found in $PATH"))
 	if rc := cmdAdd([]string{"task", "Sweep Fail"}); rc != 0 {
 		t.Fatalf("add rc=%d", rc)
 	}

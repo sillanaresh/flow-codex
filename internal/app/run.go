@@ -35,7 +35,7 @@ func cmdRunPlaybook(args []string) int {
 	}
 	slug := args[0]
 	fs := flagSet("run playbook")
-	dangerSkip := fs.Bool("dangerously-skip-permissions", false, "pass --dangerously-skip-permissions through to claude")
+	dangerSkip := fs.Bool("dangerously-skip-permissions", false, "pass Codex's dangerous bypass flag through to codex")
 	if err := fs.Parse(args[1:]); err != nil {
 		return 2
 	}

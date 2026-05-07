@@ -66,7 +66,7 @@ func TestRunSlugSecondCollision(t *testing.T) {
 
 func TestRunSlugUTCNormalization(t *testing.T) {
 	db := openTempDB(t)
-	loc, _ := time.LoadLocation("Asia/Kolkata") // UTC+5:30
+	loc, _ := time.LoadLocation("Asia/Kolkata")        // UTC+5:30
 	local := time.Date(2026, 4, 30, 16, 0, 45, 0, loc) // 10:30 UTC
 	got, err := generateRunSlug(db, "p", local)
 	if err != nil {
@@ -136,10 +136,10 @@ func TestCmdRunPlaybookCreatesRunTask(t *testing.T) {
 		t.Errorf("run brief should be verbatim copy of playbook brief")
 	}
 
-	// iTerm should have been called with a 'claude' command.
+	// iTerm should have been called with a 'codex' command.
 	script := lastScript()
-	if !strings.Contains(script, "claude --session-id ") {
-		t.Errorf("expected claude session-id in spawn script, got: %q", script)
+	if !strings.Contains(script, "codex ") {
+		t.Errorf("expected codex in spawn script, got: %q", script)
 	}
 }
 

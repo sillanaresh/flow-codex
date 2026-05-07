@@ -124,22 +124,22 @@ func isAccessibilityDenied(err error) bool {
 }
 
 // wrapAccessibilityError returns a multi-line error explaining what's
-// missing and how to fix it. The Claude session that ran `flow do`
+// missing and how to fix it. The Codex session that ran `flow do`
 // surfaces this error verbatim and can walk the user through System
 // Settings → Privacy → Accessibility from there.
 //
 // Note on which app to grant: macOS attributes Accessibility to the
 // "responsible process" — the user-launched terminal app that owns
-// the shell, NOT the flow binary or Claude Code. This function only
+// the shell, NOT the flow binary or Codex. This function only
 // fires when the Terminal.app backend was selected, which only
 // happens when TERM_PROGRAM=Apple_Terminal — so we can name "Terminal"
 // definitively without enumerating other candidates. Past wording
-// listed "Terminal / iTerm / Claude" as possible answers and sent
-// Claude sessions advising users to toggle the wrong app.
+// listed "Terminal / iTerm / Codex" as possible answers and sent
+// Codex sessions advising users to toggle the wrong app.
 func wrapAccessibilityError(err error) error {
 	return fmt.Errorf(`Terminal.app tab spawn requires macOS Accessibility permission for Terminal — the app hosting this shell.
 
-Why this is needed: Terminal.app's AppleScript dictionary has no "make new tab" command. Apple never exposed it. The only way to open a new tab from code is to send cmd-T through System Events, and System Events checks Accessibility against the responsible parent app, which is Terminal.app itself — NOT Claude Code, NOT the flow binary. This gate only applies to the Terminal.app backend; iTerm2 has a native "create tab" verb and does not need it.
+Why this is needed: Terminal.app's AppleScript dictionary has no "make new tab" command. Apple never exposed it. The only way to open a new tab from code is to send cmd-T through System Events, and System Events checks Accessibility against the responsible parent app, which is Terminal.app itself — NOT Codex, NOT the flow binary. This gate only applies to the Terminal.app backend; iTerm2 has a native "create tab" verb and does not need it.
 
 How to grant it:
   1. Open the right pane: open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"

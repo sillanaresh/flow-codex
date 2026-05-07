@@ -1,14 +1,18 @@
 package app
 
 import (
+	"database/sql"
 	"encoding/json"
+	"errors"
+	"flow/internal/flowdb"
 	"fmt"
+	"io"
 	"os"
 )
 
 // cmdHook dispatches `flow hook <subcommand>`. Two subcommands:
 //
-//   - session-start: wired as a Claude Code SessionStart hook so that
+//   - session-start: wired as a Codex SessionStart hook so that
 //     every session start (fresh spawn AND resume) re-injects the
 //     "load your task context" instruction. Without it, resumed
 //     sessions never re-read briefs and updates that may have been
@@ -16,7 +20,7 @@ import (
 //
 //   - user-prompt-submit: wired as a UserPromptSubmit hook. Fires on
 //     every user prompt; in ad-hoc sessions (FLOW_TASK unset) it
-//     reminds Claude to invoke the flow skill before responding so the
+//     reminds Codex to invoke the flow skill before responding so the
 //     §4.14 substantive-work check actually runs. In bound sessions
 //     (FLOW_TASK set) it no-ops; the SessionStart context already
 //     covers the bound case.
@@ -37,19 +41,19 @@ func cmdHook(args []string) int {
 	}
 }
 
-// cmdHookSessionStart emits a Claude Code SessionStart hook response.
-// Wired via ~/.claude/settings.json with a matcher of "startup|resume"
-// so it fires for both fresh spawns and `claude --resume`.
+// cmdHookSessionStart emits a Codex SessionStart hook response.
+// Wired via ~/.codex/hooks.json with a matcher of "startup|resume"
+// so it fires for both fresh spawns and `codex resume`.
 //
 // Two modes:
 //   - $FLOW_TASK set (spawned by `flow do`): emit the full task-context
 //     reload instructions. On a fresh spawn this is redundant with the
 //     bootstrap prompt but harmless; on a resume it's the only way to
 //     force the agent to re-read potentially-updated briefs and updates.
-//   - $FLOW_TASK unset (ad-hoc session, e.g. bare `claude`): emit a
+//   - $FLOW_TASK unset (ad-hoc session, e.g. bare `codex`): emit a
 //     short hint that the flow skill is installed and should be used
 //     when the request touches task / project / session management.
-//     Without this, Claude Code may not auto-invoke the skill on the
+//     Without this, Codex may not auto-invoke the skill on the
 //     user's first message.
 func cmdHookSessionStart(args []string) int {
 	fs := flagSet("hook session-start")
@@ -61,13 +65,17 @@ func cmdHookSessionStart(args []string) int {
 	if slug == "" {
 		return emitAmbientSkillHint()
 	}
+	in := readCodexHookInput()
+	if in.SessionID != "" {
+		registerCodexSession(slug, in)
+	}
 
 	instructions := fmt.Sprintf(
-		"You are running inside a flow execution session for task %q. "+
+		"You are running inside a Codex execution session for flow task %q. "+
 			"Before doing anything else in this turn, re-load your task context — "+
 			"the brief and update files may have been edited since your previous "+
 			"session. Do these in order: "+
-			"(1) invoke the `flow` skill via the Skill tool. That skill is your "+
+			"(1) invoke the `flow` skill. That skill is your "+
 			"operating manual for this session: it defines the bootstrap contract, "+
 			"the workflows for starting/saving/logging/archiving work, KB scoop "+
 			"discipline, and the scope-creep detection that keeps unrelated work "+
@@ -76,7 +84,7 @@ func cmdHookSessionStart(args []string) int {
 			"`brief:` path AND every file listed under `updates:`; "+
 			"(3) if a project is listed on the task, run `flow show project <that-slug>` "+
 			"and Read its brief and updates too; "+
-			"(4) Read `CLAUDE.md` in your work_dir and any nested CLAUDE.md under "+
+			"(4) Review AGENTS.md guidance loaded by Codex and any nested AGENTS.md under "+
 			"subdirectories you plan to modify. "+
 			"Only then proceed with the user's request. "+
 			"If any brief section is blank or unclear, ASK — do not infer. "+
@@ -119,17 +127,17 @@ func appendStaleVersionHint() string {
 // emitAmbientSkillHint is the FLOW_TASK-unset branch of the SessionStart
 // hook. The user has installed flow — a personal task/session manager
 // and knowledge base — and benefits from having work flow through it.
-// The hint frames that value prop and tells Claude to load the skill;
-// it deliberately does NOT ask Claude to pre-judge whether the user's
+// The hint frames that value prop and tells Codex to load the skill;
+// it deliberately does NOT ask Codex to pre-judge whether the user's
 // request is "substantive enough". That gate is the skill's job, not
-// the hook's, and prior framing leaked Claude's interpretive bias.
+// the hook's, and prior framing leaked Codex's interpretive bias.
 func emitAmbientSkillHint() int {
-	hint := "This Claude session is not bound to a flow task. The user already tracks " +
+	hint := "This Codex session is not bound to a flow task. The user already tracks " +
 		"their work and knowledge in flow — a personal task and session manager that " +
-		"captures work as briefs, logs progress notes, resumes Claude sessions across " +
+		"captures work as briefs, logs progress notes, resumes Codex sessions across " +
 		"days, and maintains a central knowledge base of durable facts about them, " +
 		"their org, and their work. Their tasks, projects, and KB already exist. " +
-		"Invoke the `flow` skill via the Skill tool now and let it run alongside the " +
+		"Invoke the `flow` skill now and let it run alongside the " +
 		"conversation. When the user starts any work in this session, before doing it, " +
 		"confirm with them via AskUserQuestion: is this part of an existing flow task, " +
 		"or should we create a new one? The user's work belongs in flow — don't " +
@@ -153,7 +161,7 @@ func emitSessionStartContext(ctx string) int {
 }
 
 // emitHookContext marshals a hookSpecificOutput payload for the given
-// Claude Code hook event name. Used by both SessionStart and
+// Codex hook event name. Used by both SessionStart and
 // UserPromptSubmit hook handlers.
 func emitHookContext(event, ctx string) int {
 	out := map[string]any{
@@ -171,7 +179,7 @@ func emitHookContext(event, ctx string) int {
 
 // cmdHookUserPromptSubmit implements `flow hook user-prompt-submit`.
 // In ad-hoc sessions (FLOW_TASK unset) it emits a directive instructing
-// Claude to invoke the flow skill BEFORE responding and to apply
+// Codex to invoke the flow skill BEFORE responding and to apply
 // §4.14. No keyword gate — the directive fires on every prompt because
 // users describe substantive work in their own words ("help me build
 // X", "fix this bug") and won't say "create a task" themselves.
@@ -190,9 +198,9 @@ func cmdHookUserPromptSubmit(args []string) int {
 	}
 	hint := "The user already tracks their work and knowledge in flow (a personal " +
 		"task/session manager with a central knowledge base of durable facts about " +
-		"them, their org, and their work) and this Claude session is unbound. Their " +
-		"tasks and KB already exist. Before responding: invoke the `flow` skill via " +
-		"the Skill tool if you haven't already this session — it is the operating " +
+		"them, their org, and their work) and this Codex session is unbound. Their " +
+		"tasks and KB already exist. Before responding: invoke the `flow` skill " +
+		"if you haven't already this session — it is the operating " +
 		"manual for capturing work as flow tasks, logging progress, and keeping the " +
 		"user's KB current. When the user starts any work in this session, before " +
 		"doing it, confirm with them via AskUserQuestion: is this part of an existing " +
@@ -204,4 +212,57 @@ func cmdHookUserPromptSubmit(args []string) int {
 		"asking. The skill's §4.10 governs lazy-loading so you don't read everything " +
 		"every turn."
 	return emitHookContext("UserPromptSubmit", hint)
+}
+
+type codexHookInput struct {
+	SessionID      string `json:"session_id"`
+	TranscriptPath string `json:"transcript_path"`
+	CWD            string `json:"cwd"`
+	Source         string `json:"source"`
+}
+
+func readCodexHookInput() codexHookInput {
+	info, err := os.Stdin.Stat()
+	if err != nil || (info.Mode()&os.ModeCharDevice) != 0 {
+		return codexHookInput{}
+	}
+	raw, err := io.ReadAll(os.Stdin)
+	if err != nil || len(raw) == 0 {
+		return codexHookInput{}
+	}
+	var in codexHookInput
+	_ = json.Unmarshal(raw, &in)
+	return in
+}
+
+func registerCodexSession(slug string, in codexHookInput) {
+	dbPath, err := flowDBPath()
+	if err != nil {
+		return
+	}
+	db, err := flowdb.OpenDB(dbPath)
+	if err != nil {
+		return
+	}
+	defer db.Close()
+
+	task, err := flowdb.GetTask(db, slug)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return
+		}
+		return
+	}
+	now := flowdb.NowISO()
+	if in.Source == "resume" {
+		_, _ = db.Exec(
+			`UPDATE tasks SET session_id=?, transcript_path=?, session_last_resumed=?, updated_at=? WHERE slug=?`,
+			in.SessionID, flowdb.NullIfEmpty(in.TranscriptPath), now, now, task.Slug,
+		)
+		return
+	}
+	_, _ = db.Exec(
+		`UPDATE tasks SET session_id=?, transcript_path=?, session_started=COALESCE(session_started, ?), updated_at=? WHERE slug=?`,
+		in.SessionID, flowdb.NullIfEmpty(in.TranscriptPath), now, now, task.Slug,
+	)
 }

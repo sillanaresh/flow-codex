@@ -36,8 +36,8 @@ func flowDBPath() (string, error) {
 	return dbPath, nil
 }
 
-// cmdInit creates ~/.flow/ (or $FLOW_ROOT), initializes flow.db, installs
-// the skill. Idempotent — re-running is safe.
+// cmdInit creates ~/.flow/ (or $FLOW_ROOT), initializes flow.db, and
+// installs the Codex skill/hooks. Idempotent — re-running is safe.
 func cmdInit(args []string) int {
 	fs := flagSet("init")
 	if err := fs.Parse(args); err != nil {
@@ -118,11 +118,20 @@ func cmdInit(args []string) int {
 	}
 
 	// Install the SessionStart hook idempotently.
+	if _, err := ensureCodexHooksFeature(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not enable Codex hooks feature: %v\n", err)
+	}
 	if added, err := installSessionStartHook(); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not install SessionStart hook: %v\n", err)
 	} else if added {
 		settings, _ := userSettingsPath()
 		fmt.Printf("installed SessionStart hook in %s\n", settings)
+	}
+	if added, err := installUserPromptSubmitHook(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not install UserPromptSubmit hook: %v\n", err)
+	} else if added {
+		settings, _ := userSettingsPath()
+		fmt.Printf("installed UserPromptSubmit hook in %s\n", settings)
 	}
 
 	fmt.Printf("flow initialized at %s\n", root)
