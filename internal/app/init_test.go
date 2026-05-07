@@ -4,6 +4,7 @@ import (
 	"flow/internal/flowdb"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -94,6 +95,32 @@ func TestCmdInitInstallsSkill(t *testing.T) {
 	}
 	if info.Size() == 0 {
 		t.Errorf("SKILL.md is empty")
+	}
+}
+
+func TestCmdInitInstallsCodexHooksAndFeature(t *testing.T) {
+	initTempFlowRoot(t)
+	if rc := cmdInit(nil); rc != 0 {
+		t.Fatalf("cmdInit rc=%d", rc)
+	}
+	home := os.Getenv("HOME")
+	settings := readSettings(t, filepath.Join(home, ".codex", "hooks.json"))
+	hooks, _ := settings["hooks"].(map[string]any)
+	if hooks == nil {
+		t.Fatal("hooks.json has no hooks key")
+	}
+	if !hookEventReferencesCommand(hooks, "SessionStart", hookCommand) {
+		t.Fatalf("SessionStart hook not installed: %#v", hooks["SessionStart"])
+	}
+	if !hookEventReferencesCommand(hooks, "UserPromptSubmit", userPromptSubmitHookCommand) {
+		t.Fatalf("UserPromptSubmit hook not installed: %#v", hooks["UserPromptSubmit"])
+	}
+	raw, err := os.ReadFile(filepath.Join(home, ".codex", "config.toml"))
+	if err != nil {
+		t.Fatalf("read config.toml: %v", err)
+	}
+	if !strings.Contains(string(raw), "codex_hooks = true") {
+		t.Fatalf("config.toml missing codex_hooks feature:\n%s", raw)
 	}
 }
 

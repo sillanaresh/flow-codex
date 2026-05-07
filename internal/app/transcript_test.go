@@ -1,6 +1,7 @@
 package app
 
 import (
+	"database/sql"
 	"flow/internal/flowdb"
 	"flow/internal/iterm"
 	"os"
@@ -126,6 +127,107 @@ func TestTranscriptCompact(t *testing.T) {
 	}
 	if strings.Contains(out, "─── Result") {
 		t.Error("compact should omit tool results")
+	}
+}
+
+func TestTranscriptRenderCodexResponseItems(t *testing.T) {
+	tmp := t.TempDir()
+	jsonlPath := filepath.Join(tmp, "codex.jsonl")
+	codexJSONL := strings.Join([]string{
+		`{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"please inspect the repo"}]}}`,
+		`{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"thinking","thinking":"Need to list files."},{"type":"output_text","text":"I will inspect it."}]}}`,
+		`{"type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"rg --files\"}"}}`,
+		`{"type":"response_item","payload":{"type":"function_call_output","output":"README.md\nmain.go\n"}}`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(jsonlPath, []byte(codexJSONL), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out := captureStdout(t, func() {
+		if rc := renderTranscript(jsonlPath, false); rc != 0 {
+			t.Fatalf("renderTranscript rc=%d", rc)
+		}
+	})
+	for _, want := range []string{
+		"─── User ───",
+		"please inspect the repo",
+		"─── Thinking ───",
+		"Need to list files.",
+		"─── Assistant ───",
+		"I will inspect it.",
+		"─── Tool: exec_command ───",
+		`{"cmd":"rg --files"}`,
+		"─── Result ───",
+		"README.md",
+		"main.go",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("Codex transcript missing %q\n--- output ---\n%s", want, out)
+		}
+	}
+
+	compact := captureStdout(t, func() {
+		if rc := renderTranscript(jsonlPath, true); rc != 0 {
+			t.Fatalf("renderTranscript compact rc=%d", rc)
+		}
+	})
+	if strings.Contains(compact, "─── Thinking ───") {
+		t.Errorf("compact Codex transcript should omit thinking:\n%s", compact)
+	}
+	if strings.Contains(compact, "─── Result ───") {
+		t.Errorf("compact Codex transcript should omit tool results:\n%s", compact)
+	}
+	if !strings.Contains(compact, "─── Tool: exec_command ───") {
+		t.Errorf("compact Codex transcript should retain tool calls:\n%s", compact)
+	}
+}
+
+func TestSessionJSONLPathPrefersTranscriptPath(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	preferred := filepath.Join(tmp, "preferred.jsonl")
+	if err := os.WriteFile(preferred, []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	otherDir := filepath.Join(tmp, ".codex", "sessions", "2026", "05", "07")
+	if err := os.MkdirAll(otherDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sid := "11111111-2222-3333-4444-555555555555"
+	if err := os.WriteFile(filepath.Join(otherDir, "rollout-"+sid+".jsonl"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := sessionJSONLPath(&flowdb.Task{
+		SessionID:      sql.NullString{String: sid, Valid: true},
+		TranscriptPath: sql.NullString{String: preferred, Valid: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != preferred {
+		t.Fatalf("sessionJSONLPath = %q, want preferred transcript_path %q", got, preferred)
+	}
+}
+
+func TestSessionJSONLPathScansCodexSessions(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	sid := "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+	sessionDir := filepath.Join(tmp, ".codex", "sessions", "2026", "05", "07")
+	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(sessionDir, "rollout-2026-05-07T10-00-00-"+sid+".jsonl")
+	if err := os.WriteFile(want, []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := sessionJSONLPath(&flowdb.Task{SessionID: sql.NullString{String: sid, Valid: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("sessionJSONLPath = %q, want scanned Codex file %q", got, want)
 	}
 }
 

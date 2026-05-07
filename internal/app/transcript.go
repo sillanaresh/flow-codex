@@ -198,6 +198,7 @@ type codexResponsePayload struct {
 	Content   json.RawMessage `json:"content"`
 	Name      string          `json:"name"`
 	Arguments json.RawMessage `json:"arguments"`
+	Output    string          `json:"output"`
 }
 
 func renderCodexResponseItem(raw json.RawMessage, compact bool, leadingBlank bool) bool {
@@ -250,8 +251,23 @@ func renderCodexResponseItem(raw json.RawMessage, compact bool, leadingBlank boo
 		}
 		fmt.Printf("─── Tool: %s ───\n", payload.Name)
 		if len(payload.Arguments) > 0 && string(payload.Arguments) != "null" {
-			fmt.Println(string(payload.Arguments))
+			var argString string
+			if err := json.Unmarshal(payload.Arguments, &argString); err == nil {
+				fmt.Println(argString)
+			} else {
+				fmt.Println(string(payload.Arguments))
+			}
 		}
+		return true
+	case "function_call_output":
+		if compact || payload.Output == "" {
+			return false
+		}
+		if leadingBlank {
+			fmt.Println()
+		}
+		fmt.Println("─── Result ───")
+		fmt.Println(truncate(payload.Output, maxToolResultLen))
 		return true
 	}
 	return false

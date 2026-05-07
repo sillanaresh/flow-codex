@@ -70,6 +70,10 @@ func testHooksPath(home string) string {
 	return filepath.Join(home, ".codex", "hooks.json")
 }
 
+func testCodexConfigPath(home string) string {
+	return filepath.Join(home, ".codex", "config.toml")
+}
+
 // withTempHome redirects $HOME to a tempdir for the duration of the test.
 func withTempHome(t *testing.T) string {
 	t.Helper()
@@ -188,6 +192,56 @@ func TestSkillInstallWritesBothHooks(t *testing.T) {
 	}
 	if !hookEventReferencesCommand(hooks, "UserPromptSubmit", "flow hook user-prompt-submit") {
 		t.Errorf("UserPromptSubmit hook missing or wrong command: %#v", hooks["UserPromptSubmit"])
+	}
+}
+
+func TestSkillInstallEnablesCodexHooksFeature(t *testing.T) {
+	home := withTempHome(t)
+	if rc := cmdSkill([]string{"install"}); rc != 0 {
+		t.Fatalf("install rc=%d", rc)
+	}
+	raw, err := os.ReadFile(testCodexConfigPath(home))
+	if err != nil {
+		t.Fatalf("read Codex config: %v", err)
+	}
+	got := string(raw)
+	if !strings.Contains(got, "[features]") {
+		t.Fatalf("config missing [features]:\n%s", got)
+	}
+	if !strings.Contains(got, "codex_hooks = true") {
+		t.Fatalf("config missing codex_hooks feature:\n%s", got)
+	}
+}
+
+func TestSkillInstallPreservesExistingCodexConfig(t *testing.T) {
+	home := withTempHome(t)
+	config := testCodexConfigPath(home)
+	if err := os.MkdirAll(filepath.Dir(config), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	before := "model = \"gpt-5.4\"\n\n[features]\nbrowser_use = true\ncodex_hooks = false\n"
+	if err := os.WriteFile(config, []byte(before), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if rc := cmdSkill([]string{"install"}); rc != 0 {
+		t.Fatalf("install rc=%d", rc)
+	}
+	raw, err := os.ReadFile(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(raw)
+	for _, want := range []string{
+		`model = "gpt-5.4"`,
+		"browser_use = true",
+		"codex_hooks = true",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("config missing preserved/enabled line %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "codex_hooks = false") {
+		t.Errorf("config still has disabled codex_hooks:\n%s", got)
 	}
 }
 

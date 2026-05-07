@@ -220,3 +220,57 @@ func TestHookSessionStartRegistersCodexSession(t *testing.T) {
 		t.Fatalf("transcript_path = %+v, want session.jsonl", task.TranscriptPath)
 	}
 }
+
+func TestHookSessionStartResumeUpdatesLastResumed(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("FLOW_ROOT", filepath.Join(tmp, "flow"))
+	t.Setenv("HOME", tmp)
+	t.Setenv("FLOW_TASK", "resume-task")
+
+	if rc := cmdInit(nil); rc != 0 {
+		t.Fatalf("init rc=%d", rc)
+	}
+	if rc := cmdAdd([]string{"task", "Resume Task", "--slug", "resume-task"}); rc != 0 {
+		t.Fatalf("add rc=%d", rc)
+	}
+
+	db := openFlowDB(t)
+	if _, err := db.Exec(
+		`UPDATE tasks SET session_id=?, session_started=? WHERE slug=?`,
+		"old-session", flowdb.NowISO(), "resume-task",
+	); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	oldStdin := os.Stdin
+	r, w, _ := os.Pipe()
+	os.Stdin = r
+	_, _ = w.Write([]byte(`{"session_id":"new-session","transcript_path":"` + filepath.Join(tmp, "resume.jsonl") + `","source":"resume"}`))
+	_ = w.Close()
+	t.Cleanup(func() { os.Stdin = oldStdin })
+
+	out := captureStdout(t, func() {
+		if rc := cmdHookSessionStart(nil); rc != 0 {
+			t.Fatalf("rc=%d", rc)
+		}
+	})
+	if !strings.Contains(out, "SessionStart") {
+		t.Fatalf("expected hook output, got %s", out)
+	}
+
+	db = openFlowDB(t)
+	task, err := flowdb.GetTask(db, "resume-task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !task.SessionID.Valid || task.SessionID.String != "new-session" {
+		t.Fatalf("session_id = %+v, want new-session", task.SessionID)
+	}
+	if !task.SessionLastResumed.Valid {
+		t.Fatalf("session_last_resumed should be set on resume registration")
+	}
+	if !task.TranscriptPath.Valid || !strings.Contains(task.TranscriptPath.String, "resume.jsonl") {
+		t.Fatalf("transcript_path = %+v, want resume.jsonl", task.TranscriptPath)
+	}
+}
