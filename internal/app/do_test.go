@@ -245,6 +245,32 @@ func TestCmdDoFreshStartsNewCodexSession(t *testing.T) {
 	}
 }
 
+func TestCmdDoFreshDangerouslySkipPermissionsDoesNotResume(t *testing.T) {
+	setupFlowRoot(t)
+	seedTask(t, "fresh-danger")
+
+	db := openFlowDB(t)
+	if _, err := db.Exec(`UPDATE tasks SET session_id='old-sid', session_started=? WHERE slug='fresh-danger'`, flowdb.NowISO()); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	_, getScript := stubITerm(t)
+	if rc := cmdDo([]string{"fresh-danger", "--fresh", "--dangerously-skip-permissions"}); rc != 0 {
+		t.Fatalf("rc=%d", rc)
+	}
+	script := getScript()
+	if strings.Contains(script, "codex resume") {
+		t.Fatalf("--fresh must not resume old session, got:\n%s", script)
+	}
+	if !strings.Contains(script, "codex --dangerously-bypass-approvals-and-sandbox ") {
+		t.Fatalf("--fresh dangerous spawn should put Codex flag before prompt, got:\n%s", script)
+	}
+	if !strings.Contains(script, "fresh-danger") {
+		t.Fatalf("fresh dangerous bootstrap prompt missing task slug, got:\n%s", script)
+	}
+}
+
 func TestCmdDoDoneTaskRefused(t *testing.T) {
 	setupFlowRoot(t)
 	seedTask(t, "closed-task")

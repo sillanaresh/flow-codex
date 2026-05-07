@@ -243,7 +243,7 @@ func skillUninstall(args []string) int {
 	}
 
 	if *keepHook {
-		fmt.Println("--keep-hook: leaving SessionStart hook in settings.json")
+		fmt.Println("--keep-hook: leaving Codex hooks in ~/.codex/hooks.json")
 		return 0
 	}
 	if removed, err := uninstallSessionStartHook(); err != nil {

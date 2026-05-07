@@ -274,3 +274,53 @@ func TestHookSessionStartResumeUpdatesLastResumed(t *testing.T) {
 		t.Fatalf("transcript_path = %+v, want resume.jsonl", task.TranscriptPath)
 	}
 }
+
+func TestHookSessionStartMalformedInputDoesNotClobberSession(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("FLOW_ROOT", filepath.Join(tmp, "flow"))
+	t.Setenv("HOME", tmp)
+	t.Setenv("FLOW_TASK", "stable-task")
+
+	if rc := cmdInit(nil); rc != 0 {
+		t.Fatalf("init rc=%d", rc)
+	}
+	if rc := cmdAdd([]string{"task", "Stable Task", "--slug", "stable-task"}); rc != 0 {
+		t.Fatalf("add rc=%d", rc)
+	}
+	db := openFlowDB(t)
+	if _, err := db.Exec(
+		`UPDATE tasks SET session_id=?, transcript_path=?, session_started=? WHERE slug=?`,
+		"keep-session", filepath.Join(tmp, "keep.jsonl"), flowdb.NowISO(), "stable-task",
+	); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	oldStdin := os.Stdin
+	r, w, _ := os.Pipe()
+	os.Stdin = r
+	_, _ = w.Write([]byte(`{"session_id":`))
+	_ = w.Close()
+	t.Cleanup(func() { os.Stdin = oldStdin })
+
+	out := captureStdout(t, func() {
+		if rc := cmdHookSessionStart(nil); rc != 0 {
+			t.Fatalf("rc=%d", rc)
+		}
+	})
+	if !strings.Contains(out, "SessionStart") {
+		t.Fatalf("expected hook output even with malformed stdin, got %s", out)
+	}
+
+	db = openFlowDB(t)
+	task, err := flowdb.GetTask(db, "stable-task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !task.SessionID.Valid || task.SessionID.String != "keep-session" {
+		t.Fatalf("malformed hook input clobbered session_id: %+v", task.SessionID)
+	}
+	if !task.TranscriptPath.Valid || !strings.Contains(task.TranscriptPath.String, "keep.jsonl") {
+		t.Fatalf("malformed hook input clobbered transcript_path: %+v", task.TranscriptPath)
+	}
+}

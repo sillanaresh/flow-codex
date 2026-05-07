@@ -195,6 +195,68 @@ func TestSkillInstallWritesBothHooks(t *testing.T) {
 	}
 }
 
+func TestSkillInstallPreservesUnrelatedHooksAndSettings(t *testing.T) {
+	home := withTempHome(t)
+	hooksPath := testHooksPath(home)
+	if err := os.MkdirAll(filepath.Dir(hooksPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	existing := map[string]any{
+		"theme": "dark",
+		"hooks": map[string]any{
+			"SessionStart": []any{
+				map[string]any{
+					"matcher": "startup",
+					"hooks": []any{
+						map[string]any{
+							"type":    "command",
+							"command": "echo existing-session-hook",
+						},
+					},
+				},
+			},
+			"Notification": []any{
+				map[string]any{
+					"hooks": []any{
+						map[string]any{
+							"type":    "command",
+							"command": "echo notify",
+						},
+					},
+				},
+			},
+		},
+	}
+	raw, err := json.MarshalIndent(existing, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(hooksPath, append(raw, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if rc := cmdSkill([]string{"install"}); rc != 0 {
+		t.Fatalf("install rc=%d", rc)
+	}
+	settings := readSettings(t, hooksPath)
+	if settings["theme"] != "dark" {
+		t.Fatalf("top-level setting was not preserved: %#v", settings)
+	}
+	hooks, _ := settings["hooks"].(map[string]any)
+	if !hookEventReferencesCommand(hooks, "SessionStart", "echo existing-session-hook") {
+		t.Fatalf("existing SessionStart hook was not preserved: %#v", hooks["SessionStart"])
+	}
+	if !hookEventReferencesCommand(hooks, "Notification", "echo notify") {
+		t.Fatalf("unrelated Notification hook was not preserved: %#v", hooks["Notification"])
+	}
+	if !hookEventReferencesCommand(hooks, "SessionStart", hookCommand) {
+		t.Fatalf("flow SessionStart hook was not installed: %#v", hooks["SessionStart"])
+	}
+	if !hookEventReferencesCommand(hooks, "UserPromptSubmit", userPromptSubmitHookCommand) {
+		t.Fatalf("flow UserPromptSubmit hook was not installed: %#v", hooks["UserPromptSubmit"])
+	}
+}
+
 func TestSkillInstallEnablesCodexHooksFeature(t *testing.T) {
 	home := withTempHome(t)
 	if rc := cmdSkill([]string{"install"}); rc != 0 {
