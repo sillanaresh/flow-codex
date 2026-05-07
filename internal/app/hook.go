@@ -262,7 +262,7 @@ func registerCodexSession(slug string, in codexHookInput) {
 		return
 	}
 	_, _ = db.Exec(
-		`UPDATE tasks SET session_id=?, transcript_path=?, session_started=COALESCE(session_started, ?), updated_at=? WHERE slug=?`,
+		`UPDATE tasks SET session_id=?, transcript_path=?, session_started=?, updated_at=? WHERE slug=?`,
 		in.SessionID, flowdb.NullIfEmpty(in.TranscriptPath), now, now, task.Slug,
 	)
 }

@@ -219,6 +219,58 @@ func TestHookSessionStartRegistersCodexSession(t *testing.T) {
 	if !task.TranscriptPath.Valid || !strings.Contains(task.TranscriptPath.String, "session.jsonl") {
 		t.Fatalf("transcript_path = %+v, want session.jsonl", task.TranscriptPath)
 	}
+	if !task.SessionStarted.Valid {
+		t.Fatalf("session_started should be set on startup registration")
+	}
+}
+
+func TestHookSessionStartFreshReplacesStartedTimestamp(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("FLOW_ROOT", filepath.Join(tmp, "flow"))
+	t.Setenv("HOME", tmp)
+	t.Setenv("FLOW_TASK", "fresh-task")
+
+	if rc := cmdInit(nil); rc != 0 {
+		t.Fatalf("init rc=%d", rc)
+	}
+	if rc := cmdAdd([]string{"task", "Fresh Task", "--slug", "fresh-task"}); rc != 0 {
+		t.Fatalf("add rc=%d", rc)
+	}
+
+	const oldStarted = "2020-01-02T03:04:05Z"
+	db := openFlowDB(t)
+	if _, err := db.Exec(
+		`UPDATE tasks SET session_id=?, session_started=? WHERE slug=?`,
+		"old-session", oldStarted, "fresh-task",
+	); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	oldStdin := os.Stdin
+	r, w, _ := os.Pipe()
+	os.Stdin = r
+	_, _ = w.Write([]byte(`{"session_id":"fresh-session","transcript_path":"` + filepath.Join(tmp, "fresh.jsonl") + `","source":"startup"}`))
+	_ = w.Close()
+	t.Cleanup(func() { os.Stdin = oldStdin })
+
+	captureStdout(t, func() {
+		if rc := cmdHookSessionStart(nil); rc != 0 {
+			t.Fatalf("rc=%d", rc)
+		}
+	})
+
+	db = openFlowDB(t)
+	task, err := flowdb.GetTask(db, "fresh-task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !task.SessionID.Valid || task.SessionID.String != "fresh-session" {
+		t.Fatalf("session_id = %+v, want fresh-session", task.SessionID)
+	}
+	if !task.SessionStarted.Valid || task.SessionStarted.String == oldStarted {
+		t.Fatalf("session_started = %+v, want replacement timestamp", task.SessionStarted)
+	}
 }
 
 func TestHookSessionStartResumeUpdatesLastResumed(t *testing.T) {
